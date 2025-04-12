@@ -42,6 +42,8 @@ hands = mp_hands.Hands(
 
 # Global variables for stabilized piano detection
 stabilized_sheet = None
+stabilized_corners = None
+stabilized_perspective_transform = None
 stabilized_white_keys = None
 stabilized_black_keys = None
 stabilized_white_dots = None
@@ -49,9 +51,11 @@ stabilized_black_dots = None
 stabilization_counter = 0
 MAX_STABILIZATION_FRAMES = 30
 is_stabilized = False
+canvas_width = 700  # Target width for perspective-corrected view
+canvas_height = 200  # Target height for perspective-corrected view
 
-def detect_piano_sheet(image):
-    """Detect the sheet with printed piano in the image"""
+def detect_piano_sheet_corners(image):
+    """Detect the four corners of the piano sheet for perspective transformation"""
     # Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
@@ -71,42 +75,96 @@ def detect_piano_sheet(image):
         candidates = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
         
         for contour in candidates:
-            # Check if contour is rectangular (piano sheet likely is)
+            # Check if contour is approximately rectangular (piano sheet likely is)
             peri = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
             
-            if len(approx) == 4:  # If we have a rectangle
-                rect = cv2.boundingRect(approx)
-                x, y, w, h = rect
-                # Check if the aspect ratio is reasonable for a piano keyboard
-                aspect_ratio = w / float(h)
-                if 1.2 < aspect_ratio < 5.0:  # Piano keyboard usually wider than tall
-                    return rect
+            if len(approx) == 4:  # If we have a quadrilateral
+                # Sort corners in the correct order (top-left, top-right, bottom-right, bottom-left)
+                corners = np.array([point[0] for point in approx])
+                
+                # Check if it has a reasonable aspect ratio
+                rect = cv2.minAreaRect(contour)
+                width, height = rect[1]
+                aspect_ratio = max(width, height) / min(width, height) if min(width, height) > 0 else 0
+                
+                if 1.5 < aspect_ratio < 5.0:  # Piano keyboard is usually wider than tall
+                    # Calculate center of each point
+                    sums = corners.sum(axis=1)
+                    diffs = corners[:, 0] - corners[:, 1]
+                    
+                    # Sort corners: top-left, top-right, bottom-right, bottom-left
+                    ordered_corners = np.zeros_like(corners)
+                    ordered_corners[0] = corners[np.argmin(sums)]  # Top-left has smallest sum
+                    ordered_corners[2] = corners[np.argmax(sums)]  # Bottom-right has largest sum
+                    ordered_corners[1] = corners[np.argmax(diffs)]  # Top-right has largest difference
+                    ordered_corners[3] = corners[np.argmin(diffs)]  # Bottom-left has smallest difference
+                    
+                    return ordered_corners, cv2.boundingRect(contour)
         
-        # If no suitable rectangle found, just return the largest contour
-        return cv2.boundingRect(candidates[0])
+        # If no suitable rectangle found, try to get corners from the largest contour
+        if candidates and len(candidates[0]) >= 4:
+            peri = cv2.arcLength(candidates[0], True)
+            approx = cv2.approxPolyDP(candidates[0], 0.02 * peri, True)
+            if len(approx) >= 4:
+                # Get the four most extreme points
+                hull = cv2.convexHull(approx)
+                leftmost = tuple(hull[hull[:, :, 0].argmin()][0])
+                rightmost = tuple(hull[hull[:, :, 0].argmax()][0])
+                topmost = tuple(hull[hull[:, :, 1].argmin()][0])
+                bottommost = tuple(hull[hull[:, :, 1].argmax()][0])
+                
+                corners = np.array([topmost, rightmost, bottommost, leftmost])
+                return corners, cv2.boundingRect(candidates[0])
     
-    return None
+    return None, None
 
-def detect_keys_from_sheet(image, sheet_rect):
-    """Detect piano keys from the printed piano sheet"""
-    if sheet_rect is None:
+def apply_perspective_correction(image, corners):
+    """Apply perspective correction to get a bird's eye view of the piano"""
+    global canvas_width, canvas_height
+    
+    if corners is None:
+        return None, None
+    
+    # Define the corners of the destination image
+    dst_corners = np.array([
+        [0, 0],  # Top-left
+        [canvas_width, 0],  # Top-right
+        [canvas_width, canvas_height],  # Bottom-right
+        [0, canvas_height]  # Bottom-left
+    ], dtype=np.float32)
+    
+    # Convert corners to the required format
+    src_corners = corners.astype(np.float32)
+    
+    # Calculate the perspective transform matrix
+    perspective_matrix = cv2.getPerspectiveTransform(src_corners, dst_corners)
+    
+    # Apply the perspective transformation
+    warped = cv2.warpPerspective(image, perspective_matrix, (canvas_width, canvas_height))
+    
+    return warped, perspective_matrix
+
+def detect_keys_from_sheet(warped_image):
+    """Detect piano keys from the perspective-corrected piano sheet"""
+    if warped_image is None:
         return [], []
     
-    x, y, w, h = sheet_rect
+    # Get dimensions of the warped image
+    h, w = warped_image.shape[:2]
     
     # Define the number of white keys
     num_white_keys = 7
     
-    # Create white keys (blue in visualization)
+    # Create white keys
     white_keys = []
     white_key_width = w // num_white_keys
     
     for i in range(num_white_keys):
-        key_x = x + i * white_key_width
-        white_keys.append((key_x, y, white_key_width, h))
+        key_x = i * white_key_width
+        white_keys.append((key_x, 0, white_key_width, h))
     
-    # Create black keys (red in visualization)
+    # Create black keys
     # Standard piano has black keys at positions 0, 1, 3, 4, 5 (when counting spaces between white keys)
     black_keys = []
     black_key_width = int(white_key_width * 0.6)
@@ -116,21 +174,19 @@ def detect_keys_from_sheet(image, sheet_rect):
     for pos in black_key_positions:
         if pos >= num_white_keys - 1:
             continue  # Skip if position would be out of bounds
-        black_x = x + white_key_width // 2 + pos * white_key_width
+        black_x = white_key_width // 2 + pos * white_key_width
         # Position black keys at BOTTOM of white keys 
-        black_y = y + h - black_key_height  # Position at bottom of white keys
+        black_y = h - black_key_height  # Position at bottom of white keys
         black_keys.append((int(black_x - black_key_width/2), black_y, black_key_width, black_key_height))
     
     return white_keys, black_keys
 
-def detect_dots(image, sheet_rect, white_keys, black_keys):
-    """Detect the white and black dots on the piano sheet"""
-    if sheet_rect is None:
+def detect_dots(warped_image, white_keys, black_keys):
+    """Detect the white and black dots on the corrected piano sheet"""
+    if warped_image is None:
         return [], []
     
-    x, y, w, h = sheet_rect
-    roi = image[y:y+h, x:x+w]
-    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gray_roi = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
     
     # Lists to store dots with their key indices
     white_dots = []  # Dots on black keys (will be white dots)
@@ -139,15 +195,7 @@ def detect_dots(image, sheet_rect, white_keys, black_keys):
     # Process black keys to find white dots
     for i, (bx, by, bw, bh) in enumerate(black_keys):
         # Extract ROI for this black key
-        key_x1 = max(0, bx - x)
-        key_x2 = min(w, bx + bw - x)
-        key_y1 = max(0, by - y)
-        key_y2 = min(h, by + bh - y)
-        
-        if key_x1 >= key_x2 or key_y1 >= key_y2:
-            continue
-            
-        key_roi = gray_roi[key_y1:key_y2, key_x1:key_x2]
+        key_roi = gray_roi[by:by+bh, bx:bx+bw]
         
         if key_roi.size == 0:
             continue
@@ -163,23 +211,15 @@ def detect_dots(image, sheet_rect, white_keys, black_keys):
             if 10 < area < 200:  # Adjust threshold based on your dot size
                 m = cv2.moments(contour)
                 if m["m00"] > 0:
-                    cx = int(m["m10"] / m["m00"]) + key_x1 + x
-                    cy = int(m["m01"] / m["m00"]) + key_y1 + y
+                    cx = int(m["m10"] / m["m00"]) + bx
+                    cy = int(m["m01"] / m["m00"]) + by
                     # Store the dot with its corresponding black key index
                     white_dots.append((cx, cy, i + 7))  # Offset by 7 for black keys
     
     # Process white keys to find black dots
     for i, (wx, wy, ww, wh) in enumerate(white_keys):
-        # For inverted layout, check upper half of white keys for dots (since black keys are at bottom)
-        key_x1 = max(0, wx - x)
-        key_x2 = min(w, wx + ww - x)
-        key_y1 = max(0, wy - y)  # Start from top of key
-        key_y2 = min(h, wy + wh//2 - y)  # Only examine top half
-        
-        if key_x1 >= key_x2 or key_y1 >= key_y2:
-            continue
-            
-        key_roi = gray_roi[key_y1:key_y2, key_x1:key_x2]
+        # For inverted layout, check upper half of white keys for dots
+        key_roi = gray_roi[wy:wy+wh//2, wx:wx+ww]
         
         if key_roi.size == 0:
             continue
@@ -195,8 +235,8 @@ def detect_dots(image, sheet_rect, white_keys, black_keys):
             if 10 < area < 200:  # Adjust threshold based on your dot size
                 m = cv2.moments(contour)
                 if m["m00"] > 0:
-                    cx = int(m["m10"] / m["m00"]) + key_x1 + x
-                    cy = int(m["m01"] / m["m00"]) + key_y1 + y
+                    cx = int(m["m10"] / m["m00"]) + wx
+                    cy = int(m["m01"] / m["m00"]) + wy
                     # Store the dot with its corresponding white key index
                     black_dots.append((cx, cy, i))
     
@@ -210,76 +250,97 @@ def is_key_pressed(finger_tip, dots, threshold=30):
             return True, key_idx
     return False, None
 
-def stabilize_piano_sheet(image, current_sheet, white_keys, black_keys, white_dots, black_dots):
+def transform_point(point, perspective_matrix):
+    """Transform a point using the perspective transformation matrix"""
+    # Create homogeneous coordinates
+    homogeneous_point = np.array([[point[0], point[1], 1]], dtype=np.float32)
+    
+    # Apply the transformation
+    transformed = cv2.perspectiveTransform(homogeneous_point.reshape(-1, 1, 3), perspective_matrix)
+    
+    # Return the transformed point
+    return (int(transformed[0][0][0]), int(transformed[0][0][1]))
+
+def inverse_transform_point(point, perspective_matrix):
+    """Transform a point from warped space back to original image space"""
+    # Get inverse transformation matrix
+    inverse_matrix = np.linalg.inv(perspective_matrix)
+    
+    # Create homogeneous coordinates
+    homogeneous_point = np.array([[point[0], point[1], 1]], dtype=np.float32)
+    
+    # Apply the inverse transformation
+    transformed = cv2.perspectiveTransform(homogeneous_point.reshape(-1, 1, 3), inverse_matrix)
+    
+    # Return the transformed point
+    return (int(transformed[0][0][0]), int(transformed[0][0][1]))
+
+def stabilize_piano_sheet(image, current_corners, current_rect):
     """Attempt to stabilize the piano sheet detection"""
-    global stabilized_sheet, stabilized_white_keys, stabilized_black_keys
-    global stabilized_white_dots, stabilized_black_dots, stabilization_counter, is_stabilized
+    global stabilized_sheet, stabilized_corners, stabilized_perspective_transform
+    global stabilization_counter, is_stabilized
     
     # If we don't have a current detection, reset stabilization
-    if current_sheet is None:
+    if current_corners is None or current_rect is None:
         stabilization_counter = 0
         is_stabilized = False
-        return None, [], [], [], []
+        return None, None, None, None
     
     # If we're already stabilized, return the stable values
     if is_stabilized:
-        return stabilized_sheet, stabilized_white_keys, stabilized_black_keys, stabilized_white_dots, stabilized_black_dots
+        return stabilized_corners, stabilized_sheet, stabilized_perspective_transform
     
     # If this is our first detection, initialize stabilization
     if stabilization_counter == 0:
-        stabilized_sheet = current_sheet
-        stabilized_white_keys = white_keys
-        stabilized_black_keys = black_keys
-        stabilized_white_dots = white_dots
-        stabilized_black_dots = black_dots
+        stabilized_corners = current_corners
+        stabilized_sheet = current_rect
+        # Calculate initial perspective transform
+        warped, transform_matrix = apply_perspective_correction(image, current_corners)
+        stabilized_perspective_transform = transform_matrix
         stabilization_counter += 1
-        return current_sheet, white_keys, black_keys, white_dots, black_dots
+        return current_corners, current_rect, transform_matrix, warped
     
     # Check if current detection is similar to stabilized values
-    x1, y1, w1, h1 = current_sheet
+    # Calculate center points of current and stabilized rectangles
+    x1, y1, w1, h1 = current_rect
     x2, y2, w2, h2 = stabilized_sheet
+    center1 = (x1 + w1//2, y1 + h1//2)
+    center2 = (x2 + w2//2, y2 + h2//2)
     
-    # Calculate overlap and size difference
-    overlap_x = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
-    overlap_y = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
-    overlap_area = overlap_x * overlap_y
-    area1 = w1 * h1
-    area2 = w2 * h2
+    # Calculate distance between centers
+    center_distance = np.sqrt((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)
     
-    # If there's significant overlap and similar size, count towards stabilization
-    if (overlap_area > 0.7 * min(area1, area2)) and (0.8 < (area1 / area2) < 1.25):
+    # If the centers are close and the rectangle sizes are similar, count towards stabilization
+    if (center_distance < 50) and (0.8 < (w1*h1)/(w2*h2) < 1.25):
         stabilization_counter += 1
         
-        # Smooth the values (weighted average)
+        # Smooth the corners (weighted average)
         weight = min(0.9, stabilization_counter / MAX_STABILIZATION_FRAMES)
-        x = int(x2 * weight + x1 * (1 - weight))
-        y = int(y2 * weight + y1 * (1 - weight))
-        w = int(w2 * weight + w1 * (1 - weight))
-        h = int(h2 * weight + h1 * (1 - weight))
+        smoothed_corners = stabilized_corners * weight + current_corners * (1 - weight)
+        stabilized_corners = smoothed_corners.astype(np.int32)
         
-        stabilized_sheet = (x, y, w, h)
+        # Update the stabilized rectangle
+        stabilized_sheet = current_rect
+        
+        # Calculate perspective transform with smoothed corners
+        warped, transform_matrix = apply_perspective_correction(image, stabilized_corners)
+        stabilized_perspective_transform = transform_matrix
         
         # If we've reached the threshold, mark as stabilized
         if stabilization_counter >= MAX_STABILIZATION_FRAMES:
             is_stabilized = True
             print("Piano keyboard detection stabilized!")
             
-            # Re-detect keys and dots with final stabilized sheet
-            stabilized_white_keys, stabilized_black_keys = detect_keys_from_sheet(image, stabilized_sheet)
-            stabilized_white_dots, stabilized_black_dots = detect_dots(image, stabilized_sheet, 
-                                                                   stabilized_white_keys, stabilized_black_keys)
-            
-        return stabilized_sheet, stabilized_white_keys, stabilized_black_keys, stabilized_white_dots, stabilized_black_dots
+        return stabilized_corners, stabilized_sheet, stabilized_perspective_transform, warped
     else:
         # If detection is very different, reset stabilization
         stabilization_counter = 0
         is_stabilized = False
-        stabilized_sheet = current_sheet
-        stabilized_white_keys = white_keys
-        stabilized_black_keys = black_keys
-        stabilized_white_dots = white_dots
-        stabilized_black_dots = black_dots
-        return current_sheet, white_keys, black_keys, white_dots, black_dots
+        stabilized_corners = current_corners
+        stabilized_sheet = current_rect
+        warped, transform_matrix = apply_perspective_correction(image, current_corners)
+        stabilized_perspective_transform = transform_matrix
+        return current_corners, current_rect, transform_matrix, warped
 
 def main():
     # For webcam input
@@ -308,26 +369,38 @@ def main():
         # Process the image for hand landmarks
         results = hands.process(image_rgb)
         
-        # Detect the piano sheet (but only if not stabilized)
+        # Create visualizations
+        warped_piano = None
+        transform_matrix = None
+        white_keys, black_keys = [], []
+        white_dots, black_dots = [], []
+        
+        # Detect the piano sheet corners (but only if not stabilized)
         if not is_stabilized:
-            current_sheet = detect_piano_sheet(image)
-            if current_sheet is not None:
-                # Detect piano keys
-                white_keys, black_keys = detect_keys_from_sheet(image, current_sheet)
-                # Detect dots
-                white_dots, black_dots = detect_dots(image, current_sheet, white_keys, black_keys)
-                # Try to stabilize
-                sheet_rect, white_keys, black_keys, white_dots, black_dots = stabilize_piano_sheet(
-                    image, current_sheet, white_keys, black_keys, white_dots, black_dots)
+            corners, rect = detect_piano_sheet_corners(image)
+            if corners is not None and rect is not None:
+                # Try to stabilize the detection
+                corners, rect, transform_matrix, warped_piano = stabilize_piano_sheet(image, corners, rect)
+                
+                if warped_piano is not None:
+                    # Detect piano keys in the perspective-corrected image
+                    white_keys, black_keys = detect_keys_from_sheet(warped_piano)
+                    # Detect dots in the perspective-corrected image
+                    white_dots, black_dots = detect_dots(warped_piano, white_keys, black_keys)
             else:
-                sheet_rect, white_keys, black_keys, white_dots, black_dots = None, [], [], [], []
+                corners, rect, transform_matrix, warped_piano = None, None, None, None
         else:
             # Use existing stabilized values
-            sheet_rect = stabilized_sheet
-            white_keys = stabilized_white_keys
-            black_keys = stabilized_black_keys
-            white_dots = stabilized_white_dots
-            black_dots = stabilized_black_dots
+            corners = stabilized_corners
+            rect = stabilized_sheet
+            transform_matrix = stabilized_perspective_transform
+            
+            # Get perspective-corrected image using stabilized transform
+            warped_piano, _ = apply_perspective_correction(image, stabilized_corners)
+            
+            # Detect piano keys and dots in the stabilized warped image
+            white_keys, black_keys = detect_keys_from_sheet(warped_piano)
+            white_dots, black_dots = detect_dots(warped_piano, white_keys, black_keys)
         
         # Display stabilization progress
         if not is_stabilized and stabilization_counter > 0:
@@ -335,48 +408,49 @@ def main():
             cv2.putText(image, f"Stabilizing piano... {progress}%", (10, 60), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
-        if sheet_rect is not None:
-            x, y, w, h = sheet_rect
-            # Draw rectangle around the detected piano sheet
-            cv2.rectangle(image, (int(x), int(y)), (int(x + w), int(y + h)), (0, 255, 0), 2)
+        # Draw the piano sheet outline if detected
+        if corners is not None:
+            # Draw the quad outline
+            for i in range(4):
+                cv2.line(image, tuple(corners[i]), tuple(corners[(i+1)%4]), (0, 255, 0), 2)
+        
+        # Create a blend of the original image with the detected piano sheet
+        if warped_piano is not None:
+            # Create a separate visualization window for the corrected piano view
+            vis_piano = warped_piano.copy()
             
-            # Draw white keys (in blue)
+            # Draw white keys on the warped image
             for wx, wy, ww, wh in white_keys:
-                cv2.rectangle(image, (wx, wy), (wx + ww, wy + wh), (255, 0, 0), 2)
+                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, wy + wh), (255, 0, 0), 2)
             
-            # Draw black keys (in red)
+            # Draw black keys on the warped image
             for bx, by, bw, bh in black_keys:
-                cv2.rectangle(image, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
+                cv2.rectangle(vis_piano, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
             
-            # Draw dots
-            for wx, wy, _ in white_dots:
-                cv2.circle(image, (wx, wy), 5, (255, 255, 255), -1)
+            # Draw dots on the warped image
+            for wx, wy, key_idx in white_dots:
+                cv2.circle(vis_piano, (wx, wy), 5, (255, 255, 255), -1)
+                # Add note name near the dot
+                if key_idx in NOTES:
+                    cv2.putText(vis_piano, NOTES[key_idx], (wx - 10, wy - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            for bx, by, _ in black_dots:
-                cv2.circle(image, (bx, by), 5, (0, 0, 0), -1)
-            
-            # Draw note names
-            for i, (wx, wy, ww, wh) in enumerate(white_keys):
-                if i < len(NOTES):
-                    note_name = NOTES[i]
-                    # Position text at the bottom of white keys
-                    cv2.putText(image, note_name, (wx + ww//2 - 10, wy + wh - 10),
+            for bx, by, key_idx in black_dots:
+                cv2.circle(vis_piano, (bx, by), 5, (0, 0, 0), -1)
+                # Add note name near the dot
+                if key_idx in NOTES:
+                    cv2.putText(vis_piano, NOTES[key_idx], (bx - 10, by - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
-            for i, (bx, by, bw, bh) in enumerate(black_keys):
-                if i + 7 < len(NOTES):  # Offset for black keys
-                    note_name = NOTES[i + 7]
-                    # Position text at the middle of black keys
-                    cv2.putText(image, note_name, (bx + bw//2 - 10, by + bh//2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            cv2.imshow('Corrected Piano View', vis_piano)
         
         # Track currently pressed keys
         currently_pressed_keys = set()
         
         # Process hand landmarks only after stabilization
-        if is_stabilized and results.multi_hand_landmarks:
+        if is_stabilized and results.multi_hand_landmarks and transform_matrix is not None:
             for hand_landmarks in results.multi_hand_landmarks:
-                # Draw hand landmarks
+                # Draw hand landmarks on original image
                 mp_drawing.draw_landmarks(
                     image, 
                     hand_landmarks, 
@@ -386,7 +460,7 @@ def main():
                 )
                 
                 # Detect finger presses if piano sheet detected
-                if sheet_rect is not None and (white_dots or black_dots):
+                if warped_piano is not None and (white_dots or black_dots):
                     # Get finger tip landmarks
                     h, w, _ = image.shape
                     finger_tips = [
@@ -398,29 +472,34 @@ def main():
                     ]
                     
                     for i, landmark in enumerate(finger_tips):
-                        # Convert normalized coordinates to pixel coordinates
-                        finger_x, finger_y = int(landmark.x * w), int(landmark.y * h)
+                        # Convert normalized coordinates to pixel coordinates in original image
+                        orig_x, orig_y = int(landmark.x * w), int(landmark.y * h)
                         
-                        # Draw finger position
-                        cv2.circle(image, (finger_x, finger_y), 8, (0, 255, 255), -1)
+                        # Transform finger position to the perspective-corrected space
+                        warped_x, warped_y = transform_point((orig_x, orig_y), transform_matrix)
                         
-                        # Check if finger is pressing white dots (on black keys)
-                        is_pressed, key_idx = is_key_pressed((finger_x, finger_y), white_dots)
+                        # Draw finger position on both images
+                        cv2.circle(image, (orig_x, orig_y), 8, (0, 255, 255), -1)
+                        if 0 <= warped_x < canvas_width and 0 <= warped_y < canvas_height:
+                            cv2.circle(vis_piano, (warped_x, warped_y), 8, (0, 255, 255), -1)
+                        
+                        # Check if finger is pressing white dots (on black keys) in warped space
+                        is_pressed, key_idx = is_key_pressed((warped_x, warped_y), white_dots)
                         if is_pressed and key_idx is not None:
                             currently_pressed_keys.add(key_idx)
                             # Draw a highlight around the pressed key
                             if key_idx >= 7 and key_idx - 7 < len(black_keys):
                                 bx, by, bw, bh = black_keys[key_idx - 7]
-                                cv2.rectangle(image, (bx, by), (bx + bw, by + bh), (0, 255, 255), 3)
+                                cv2.rectangle(vis_piano, (bx, by), (bx + bw, by + bh), (0, 255, 255), 3)
                         
-                        # Check if finger is pressing black dots (on white keys)
-                        is_pressed, key_idx = is_key_pressed((finger_x, finger_y), black_dots)
+                        # Check if finger is pressing black dots (on white keys) in warped space
+                        is_pressed, key_idx = is_key_pressed((warped_x, warped_y), black_dots)
                         if is_pressed and key_idx is not None:
                             currently_pressed_keys.add(key_idx)
                             # Draw a highlight around the pressed key
                             if key_idx < len(white_keys):
                                 wx, wy, ww, wh = white_keys[key_idx]
-                                cv2.rectangle(image, (wx, wy), (wx + ww, wy + wh), (0, 255, 255), 3)
+                                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, wy + wh), (0, 255, 255), 3)
         
         # Play sounds for newly pressed keys (only after stabilized)
         if is_stabilized:
