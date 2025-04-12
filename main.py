@@ -10,9 +10,8 @@ pygame.mixer.init()
 
 # Define piano notes (C4 to B4)
 NOTES = {
-    0: 'C4', 
-    # 1: 'D4', 2: 'E4', 3: 'F4', 4: 'G4', 5: 'A4', 6: 'B4',
-    # 7: 'C#4', 8: 'D#4', 9: 'F#4', 10: 'G#4', 11: 'A#4'
+    0: 'C4', 1: 'D4', 2: 'E4', 3: 'F4', 4: 'G4', 5: 'A4', 6: 'B4',
+    7: 'C#4', 8: 'D#4', 9: 'F#4', 10: 'G#4', 11: 'A#4'
 }
 
 # Mapping from black key visual index (0-4) to Note Index (7-11)
@@ -392,6 +391,40 @@ def detect_dots(warped_image, white_keys, black_keys):
     return white_dots, black_dots
 
 
+def detect_pressed_key(fingertip, white_keys, black_keys):
+    """
+    Determines which key (if any) is being pressed by checking
+    if the fingertip coordinate is within any key's bounding box.
+    For overlapping cases, returns the key whose center is nearest to the fingertip.
+    
+    Returns:
+        key_idx (int): the note index corresponding to the key that is pressed, or None if none.
+    """
+    candidates = []
+    
+    # Check white keys (note indices 0 through 6)
+    for key_idx, (x, y, w, h) in enumerate(white_keys):
+        if x <= fingertip[0] <= x + w and y <= fingertip[1] <= y + h:
+            center = (x + w / 2, y + h / 2)
+            dist = np.hypot(fingertip[0] - center[0], fingertip[1] - center[1])
+            candidates.append((dist, key_idx))
+    
+    # Check black keys; note that our mapping is stored in black_key_visual_to_note.
+    # The index here (0 to len(black_keys)-1) is mapped to a note index.
+    for visual_idx, key_rect in enumerate(black_keys):
+        x, y, w, h = key_rect
+        if x <= fingertip[0] <= x + w and y <= fingertip[1] <= y + h:
+            center = (x + w / 2, y + h / 2)
+            dist = np.hypot(fingertip[0] - center[0], fingertip[1] - center[1])
+            note_idx = black_key_visual_to_note.get(visual_idx)
+            if note_idx is not None:
+                candidates.append((dist, note_idx))
+    
+    if candidates:
+        candidates.sort(key=lambda c: c[0])
+        return candidates[0][1]
+    return None
+
 
 
 def is_key_pressed(finger_tip, dots, threshold=25): # Reduced threshold slightly
@@ -735,53 +768,40 @@ def main():
                     mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=2), # Smaller landmarks
                     mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1))
 
-                # Process finger tips
+                # List the fingertip landmarks you want to use
                 finger_tips_landmarks = [
                     hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP],
                     hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP],
                     hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP],
                     hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP],
-                    # Optional: Add THUMB_TIP if needed, might be less accurate for key pressing
-                    # hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP],
                 ]
 
                 for landmark in finger_tips_landmarks:
-                    # Get original image coordinates
                     orig_x, orig_y = int(landmark.x * w), int(landmark.y * h)
-
-                    # Transform to warped coordinates
                     transformed_coords = transform_point((orig_x, orig_y), current_transform_matrix)
-
                     if transformed_coords is not None:
                         warped_x, warped_y = transformed_coords
-
-                        # Draw finger tip on both views
-                        cv2.circle(image, (orig_x, orig_y), 5, (255, 255, 0), -1) # Cyan on main view
+                        cv2.circle(image, (orig_x, orig_y), 5, (255, 255, 0), -1)
                         if 0 <= warped_x < canvas_width and 0 <= warped_y < canvas_height:
-                            cv2.circle(vis_piano, (warped_x, warped_y), 5, (255, 255, 0), -1) # Cyan on warped view
-
-                        # Check for key press near this finger tip
-                        is_pressed, key_idx = is_key_pressed((warped_x, warped_y), all_dots)
-                        if is_pressed:
+                            cv2.circle(vis_piano, (warped_x, warped_y), 5, (255, 255, 0), -1)
+                        
+                        # Use the new detection method based on key boundaries
+                        key_idx = detect_pressed_key((warped_x, warped_y), white_keys, black_keys)
+                        if key_idx is not None:
                             currently_pressed_keys.add(key_idx)
-                            # Highlight pressed key on vis_piano
-                            if key_idx < 7 and key_idx < len(white_keys): # White key
-                                wx, wy, ww, wh = white_keys[key_idx]
-                                # Highlight the *top* part of the white key visually
-                                highlight_y_end = int(h * white_key_dot_roi_y_end_ratio) # Match dot search area
-                                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, highlight_y_end), (0, 255, 255), 2) # Yellow highlight in top area
-                            elif key_idx >= 7: # Black key
-                                # Find the corresponding black key visual index
-                                visual_idx = -1
+                            # Optionally, highlight the key rectangle:
+                            if key_idx < 7 and key_idx < len(white_keys):
+                                x, y, ww, hh = white_keys[key_idx]
+                                cv2.rectangle(vis_piano, (x, y), (x + ww, y + hh), (0, 255, 255), 2)
+                            elif key_idx >= 7:
+                                visual_idx = None
                                 for v_idx, n_idx in black_key_visual_to_note.items():
                                     if n_idx == key_idx:
                                         visual_idx = v_idx
                                         break
-                                if visual_idx != -1 and visual_idx < len(black_keys):
-                                     bx, by, bw, bh = black_keys[visual_idx]
-                                     # Highlight the black key itself
-                                     cv2.rectangle(vis_piano, (bx, by), (bx + bw, by + bh), (0, 255, 255), 2) # Yellow highlight
-
+                                if visual_idx is not None and visual_idx < len(black_keys):
+                                    bx, by, bw, bh = black_keys[visual_idx]
+                                    cv2.rectangle(vis_piano, (bx, by), (bx + bw, by + bh), (0, 255, 255), 2)
 
 
         # --- Play Sounds ---
