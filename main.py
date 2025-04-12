@@ -15,6 +15,23 @@ NOTES = {
     # 7: 'C#4', 8: 'D#4', 9: 'F#4', 10: 'G#4', 11: 'A#4'
 }
 
+# Mapping from black key visual index (0-4) to Note Index (7-11)
+black_key_note_indices = [7, 8, 9, 10, 11] # C#, D#, F#, G#, A#
+black_key_visual_to_note = {
+    visual_idx: note_idx
+    for visual_idx, note_idx in enumerate(black_key_note_indices)
+}
+
+# Dot Detection ROI Ratios (relative to key/image dimensions)
+# For black keys (at bottom): search within the black key vertical space
+black_key_dot_roi_y_start_ratio = 0.1 # Start searching 10% down from the top *of the black key*
+black_key_dot_roi_y_end_ratio = 0.9   # Stop searching 10% up from the bottom *of the black key*
+# For white keys (at top): search near the top edge
+white_key_dot_roi_y_start_ratio = 0.05 # Start searching 5% down from the top *of the image*
+white_key_dot_roi_y_end_ratio = 0.4   # Stop searching 40% down from the top *of the image*
+# -----------------------------
+
+
 # Load sound files (placeholder for actual sound files)
 sounds = {}
 print("Loading/Generating sounds...")
@@ -199,8 +216,15 @@ def apply_perspective_correction(image, corners):
 
     return warped, perspective_matrix
 
+# (Keep imports, initializations, other functions like detect_piano_sheet_corners,
+#  apply_perspective_correction, transform_point, stabilize_piano_sheet, etc. the same
+#  as the previous corrected version)
+
 def detect_keys_from_sheet(warped_image):
-    """Detect piano keys from the perspective-corrected piano sheet"""
+    """
+    Detect piano keys from the perspective-corrected piano sheet,
+    assuming an inverted view (black keys at the bottom).
+    """
     if warped_image is None:
         return [], []
 
@@ -211,20 +235,27 @@ def detect_keys_from_sheet(warped_image):
     # Define the number of white keys
     num_white_keys = 7
 
-    # Create white keys
+    # --- White Keys ---
+    # White keys occupy the full visual space vertically underneath black keys
     white_keys = []
-    white_key_width = w / num_white_keys # Use float division for accuracy
+    white_key_width = w / num_white_keys  # Use float division for accuracy
 
     for i in range(num_white_keys):
         key_x = int(i * white_key_width)
         next_key_x = int((i + 1) * white_key_width)
-        current_width = next_key_x - key_x # Calculate width accurately
+        current_width = next_key_x - key_x  # Calculate width accurately
+        # Define white key area covering the full height for touch detection
         white_keys.append((key_x, 0, current_width, h))
 
-    # Create black keys
+    # --- Black Keys ---
+    # Black keys are positioned at the BOTTOM of the warped image
     black_keys = []
+    black_key_height_ratio = 0.6  # Black keys occupy bottom 60% of height
+    black_key_height = int(h * black_key_height_ratio)
     black_key_width = int(white_key_width * 0.6)
-    black_key_height = int(h * 0.6)
+    # Y-coordinate where black keys START (from the top)
+    black_key_start_y = h - black_key_height
+
     # Positions relative to the START of the white key index they are 'after'
     # C# (after 0), D# (after 1), F# (after 3), G# (after 4), A# (after 5)
     black_key_positions_indices = [0, 1, 3, 4, 5] # White key index before the black key
@@ -235,55 +266,64 @@ def detect_keys_from_sheet(warped_image):
             boundary_x = (idx + 1) * white_key_width
             black_cx = int(boundary_x) # Center black key on the line between white keys
             black_x = int(black_cx - black_key_width / 2)
-            # Place black keys visually in the upper part of the warped image
-            black_y = 0 # Position black keys starting from the top
-            black_keys.append((black_x, black_y, black_key_width, black_key_height))
+            # Position black keys starting from the bottom part of the image
+            black_keys.append((black_x, black_key_start_y, black_key_width, black_key_height))
 
     return white_keys, black_keys
 
 def detect_dots(warped_image, white_keys, black_keys):
-    """Detect the white and black dots on the corrected piano sheet"""
+    """
+    Detect the white and black dots on the corrected piano sheet,
+    assuming an inverted view (dots on white keys near top, dots on black keys within bottom area).
+    """
     if warped_image is None:
         return [], []
 
     gray_roi = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
+    h, w = gray_roi.shape # Get height for ROI calculation
 
     # Lists to store dots with their key indices
-    white_dots = []  # White dots (expected on black keys)
-    black_dots = []  # Black dots (expected on white keys)
+    white_dots = []  # White dots (expected on black keys - bottom area)
+    black_dots = []  # Black dots (expected on white keys - top area)
 
     # --- Dot Detection Parameters ---
-    min_dot_area = 15 # Increased minimum area
-    max_dot_area = 250 # Increased maximum area
-    white_dot_threshold = 180 # Threshold for white dots (adjust based on lighting)
-    black_dot_threshold = 70  # Threshold for black dots (adjust based on lighting)
-    # ROI adjustments (where to look for dots within keys)
-    black_key_dot_roi_y_start = 0.1 # Start looking 10% down the black key
-    black_key_dot_roi_y_end = 0.9   # Stop looking 10% from the bottom
-    white_key_dot_roi_y_start = 0.6 # Look in the bottom 40% of white keys (adjust if needed)
-    white_key_dot_roi_y_end = 0.95
+    min_dot_area = 15
+    max_dot_area = 250
+    white_dot_threshold = 180 # Threshold for finding light areas (dots)
+    black_dot_threshold = 70  # Threshold for finding dark areas (dots)
 
-    # Process black keys to find white dots (dots should be *white* on black keys)
-    # Mapping black key index to NOTES index: 0->7, 1->8, 2->9, 3->10, 4->11
-    black_key_note_indices = [7, 8, 9, 10, 11] # Correct mapping C#, D#, F#, G#, A# (skipping E#/Fb and B#/Cb)
-    # Need to adjust black key indices if the layout assumption changes (e.g. F#,G#,A# should be indices 2,3,4)
-    black_key_positions_indices = [0, 1, 3, 4, 5] # Indices used in detect_keys_from_sheet
+    # ROI ratios - adjust based on where dots are placed on your sheet
+    # For black keys (at bottom): search within the black key vertical space
+    # black_key_dot_roi_y_start_ratio = 0.1 # Start searching 10% down from the top *of the black key*
+    # black_key_dot_roi_y_end_ratio = 0.9   # Stop searching 10% up from the bottom *of the black key*
+    # # For white keys (at top): search near the top edge
+    # white_key_dot_roi_y_start_ratio = 0.05 # Start searching 5% down from the top *of the image*
+    # white_key_dot_roi_y_end_ratio = 0.4   # Stop searching 40% down from the top *of the image*
 
-    # Remap black key index to the actual note index
-    black_key_visual_to_note = {
-        visual_idx: note_idx
-        for visual_idx, note_idx in enumerate(black_key_note_indices)
-    }
+    # Mapping black key visual index to NOTES index
+    # black_key_note_indices = [7, 8, 9, 10, 11] # C#, D#, F#, G#, A#
+    # black_key_visual_to_note = {
+    #     visual_idx: note_idx
+    #     for visual_idx, note_idx in enumerate(black_key_note_indices)
+    # }
 
-
+    # Process black keys (bottom area) to find white dots
     for i, (bx, by, bw, bh) in enumerate(black_keys):
-         # Define ROI within the black key
-        roi_y_start = int(by + bh * black_key_dot_roi_y_start)
-        roi_y_end = int(by + bh * black_key_dot_roi_y_end)
+        # Define ROI within this specific black key's bounding box
+        roi_y_start = int(by + bh * black_key_dot_roi_y_start_ratio)
+        roi_y_end = int(by + bh * black_key_dot_roi_y_end_ratio)
         roi_x_start = bx
         roi_x_end = bx + bw
-        key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
 
+        # Ensure ROI coordinates are valid
+        roi_y_start = max(0, roi_y_start)
+        roi_x_start = max(0, roi_x_start)
+        roi_y_end = min(h, roi_y_end)
+        roi_x_end = min(w, roi_x_end)
+
+        if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start: continue # Skip if ROI is invalid
+
+        key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
         if key_roi.size == 0: continue
 
         # Threshold to find white things in the ROI
@@ -306,19 +346,25 @@ def detect_dots(warped_image, white_keys, black_keys):
                     # Get the correct note index for this black key visual index 'i'
                     note_idx = black_key_visual_to_note.get(i)
                     if note_idx is not None:
-                       white_dots.append((cx, cy, note_idx))
+                        white_dots.append((cx, cy, note_idx))
 
-
-    # Process white keys to find black dots (dots should be *black* on white keys)
-    # Mapping white key index to NOTES index: 0->0, 1->1, 2->2, 3->3, 4->4, 5->5, 6->6
+    # Process white keys (top area) to find black dots
     for i, (wx, wy, ww, wh) in enumerate(white_keys):
-        # Define ROI within the white key (e.g., bottom half)
-        roi_y_start = int(wy + wh * white_key_dot_roi_y_start)
-        roi_y_end = int(wy + wh * white_key_dot_roi_y_end)
+        # Define ROI within the top portion of the white key's area
+        roi_y_start = int(wy + wh * white_key_dot_roi_y_start_ratio) # wy is 0
+        roi_y_end = int(wy + wh * white_key_dot_roi_y_end_ratio)   # wh is image height
         roi_x_start = wx
         roi_x_end = wx + ww
-        key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
 
+        # Ensure ROI coordinates are valid
+        roi_y_start = max(0, roi_y_start)
+        roi_x_start = max(0, roi_x_start)
+        roi_y_end = min(h, roi_y_end) # Clamp to image height
+        roi_x_end = min(w, roi_x_end)
+
+        if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start: continue # Skip if ROI is invalid
+
+        key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
         if key_roi.size == 0: continue
 
         # Threshold to find dark things in the ROI
@@ -643,25 +689,28 @@ def main():
 
             # --- Prepare Visualization Window ---
             vis_piano = current_warped_piano.copy()
-            # Draw keys on vis_piano
+            # Draw white keys visually (e.g., as background rectangles)
             for wx, wy, ww, wh in white_keys:
-                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, wy + wh), (200, 200, 200), 1) # Lighter gray outline
+                # Draw full white key area subtly for reference
+                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, wy + wh), (220, 220, 220), -1) # Light gray fill
+                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, wy + wh), (180, 180, 180), 1) # Slightly darker outline
+
+            # Draw black keys (at the bottom) on top
             for bx, by, bw, bh in black_keys:
                 cv2.rectangle(vis_piano, (bx, by), (bx + bw, by + bh), (50, 50, 50), -1) # Filled black
                 cv2.rectangle(vis_piano, (bx, by), (bx + bw, by + bh), (200, 200, 200), 1) # Outline
 
-            # Draw dots on vis_piano
+            # Draw dots on vis_piano (dot drawing logic remains the same)
             dot_radius = 6
-            for dx, dy, key_idx in white_dots: # White dots on black keys
+            # White dots (on black keys area)
+            for dx, dy, key_idx in white_dots:
                 cv2.circle(vis_piano, (dx, dy), dot_radius, (255, 255, 255), -1)
-                cv2.circle(vis_piano, (dx, dy), dot_radius, (0, 0, 0), 1) # Black outline
-                # note_name = NOTES.get(key_idx, '?')
-                # cv2.putText(vis_piano, note_name, (dx - 10, dy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-            for dx, dy, key_idx in black_dots: # Black dots on white keys
+                cv2.circle(vis_piano, (dx, dy), dot_radius, (0, 0, 0), 1)
+            # Black dots (on white keys area)
+            for dx, dy, key_idx in black_dots:
                 cv2.circle(vis_piano, (dx, dy), dot_radius, (0, 0, 0), -1)
-                cv2.circle(vis_piano, (dx, dy), dot_radius, (255, 255, 255), 1) # White outline
-                # note_name = NOTES.get(key_idx, '?')
-                # cv2.putText(vis_piano, note_name, (dx - 10, dy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                cv2.circle(vis_piano, (dx, dy), dot_radius, (255, 255, 255), 1)
+
 
         elif not is_stabilized:
              # Create a blank canvas if no warped image and not stabilized
@@ -713,7 +762,9 @@ def main():
                             # Highlight pressed key on vis_piano
                             if key_idx < 7 and key_idx < len(white_keys): # White key
                                 wx, wy, ww, wh = white_keys[key_idx]
-                                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, wy + wh), (0, 255, 255), 2) # Yellow highlight
+                                # Highlight the *top* part of the white key visually
+                                highlight_y_end = int(h * white_key_dot_roi_y_end_ratio) # Match dot search area
+                                cv2.rectangle(vis_piano, (wx, wy), (wx + ww, highlight_y_end), (0, 255, 255), 2) # Yellow highlight in top area
                             elif key_idx >= 7: # Black key
                                 # Find the corresponding black key visual index
                                 visual_idx = -1
@@ -723,7 +774,9 @@ def main():
                                         break
                                 if visual_idx != -1 and visual_idx < len(black_keys):
                                      bx, by, bw, bh = black_keys[visual_idx]
+                                     # Highlight the black key itself
                                      cv2.rectangle(vis_piano, (bx, by), (bx + bw, by + bh), (0, 255, 255), 2) # Yellow highlight
+
 
 
         # --- Play Sounds ---
