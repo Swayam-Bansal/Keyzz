@@ -273,59 +273,71 @@ def detect_keys_from_sheet(warped_image):
 
 def detect_dots(warped_image, white_keys, black_keys):
     """
-    Detect the white and black dots on the corrected piano sheet using adaptive thresholding 
-    and morphological operations to improve reliability.
+    Detect the white and black dots on the perspective-corrected piano sheet.
     
-    This function processes two regions:
-      1. Black keys region: expected to have bright (white) dots.
-      2. White keys region: expected to have dark (black) dots.
+    Improvements for black keys (white dots on dark background):
+      - Apply histogram equalization to enhance contrast.
+      - Use a separate set of adaptive thresholding parameters.
+      - Use morphological operations to clean up noise.
+    
+    For white keys (dark dots on light background), the previous approach is retained.
     """
     if warped_image is None:
         return [], []
 
+    # Convert the warped image to grayscale.
     gray_roi = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
     h, w = gray_roi.shape
 
-    white_dots = []  # Dots expected on black keys (bright dots)
-    black_dots = []  # Dots expected on white keys (dark dots)
+    # Lists to store detected dots.
+    white_dots = []  # Detected on black keys (expecting white dots)
+    black_dots = []  # Detected on white keys (expecting dark dots)
 
     min_dot_area = 15
     max_dot_area = 250
 
-    # Adaptive thresholding parameters.
-    # block_size must be odd. C_val is subtracted from the mean.
-    block_size = 11  
-    C_val = 2        
-
-    # Kernel for morphological operations (helps remove small noise)
+    # Parameters for white key (dark dot) detection.
+    block_size = 11  # Must be odd
+    C_val = 2
     kernel = np.ones((3, 3), np.uint8)
 
-    # Process black keys (detecting white dots within the defined ROI on black keys)
+    # --- Improved Processing for Black Keys (White Dot Detection) ---
+    # Use different adaptive thresholding parameters for black keys.
+    block_size_black = 15  # Slightly larger block size to capture regional details
+    C_val_black = -2       # Negative value to lower the threshold in dark areas
+    kernel_black = np.ones((3, 3), np.uint8)  # Kernel for morphological operations
+
     for i, (bx, by, bw, bh) in enumerate(black_keys):
-        # Define ROI using ratios (these global ratios are defined in your file)
+        # Define the region of interest (ROI) for the black key based on global ratios.
         roi_y_start = int(by + bh * black_key_dot_roi_y_start_ratio)
         roi_y_end = int(by + bh * black_key_dot_roi_y_end_ratio)
         roi_x_start = bx
         roi_x_end = bx + bw
 
-        # Clamp ROI coordinates to image bounds.
+        # Clamp ROI to image boundaries.
         roi_y_start = max(0, roi_y_start)
         roi_x_start = max(0, roi_x_start)
         roi_y_end = min(h, roi_y_end)
         roi_x_end = min(w, roi_x_end)
-
         if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start:
             continue
 
         key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
+        # Enhance contrast via histogram equalization.
+        key_roi_eq = cv2.equalizeHist(key_roi)
 
-        # Adaptive thresholding extracts bright (white) dots.
-        white_thresh = cv2.adaptiveThreshold(key_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                             cv2.THRESH_BINARY, block_size, C_val)
+        # Apply adaptive thresholding to extract bright (white) dots.
+        black_thresh = cv2.adaptiveThreshold(
+            key_roi_eq, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            block_size_black, C_val_black
+        )
         # Morphological opening to remove small noise.
-        white_thresh = cv2.morphologyEx(white_thresh, cv2.MORPH_OPEN, kernel)
+        black_thresh = cv2.morphologyEx(black_thresh, cv2.MORPH_OPEN, kernel_black)
 
-        white_contours, _ = cv2.findContours(white_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Find contours from the thresholded ROI.
+        white_contours, _ = cv2.findContours(black_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for contour in white_contours:
             area = cv2.contourArea(contour)
             if min_dot_area < area < max_dot_area:
@@ -333,15 +345,15 @@ def detect_dots(warped_image, white_keys, black_keys):
                 if m["m00"] > 0:
                     cx_roi = int(m["m10"] / m["m00"])
                     cy_roi = int(m["m01"] / m["m00"])
+                    # Convert the centroid from ROI coordinates to full image coordinates.
                     cx = cx_roi + roi_x_start
                     cy = cy_roi + roi_y_start
-
-                    # Get the corresponding note index for the current black key visual index.
+                    # Map the current black key ROI to its corresponding note index.
                     note_idx = black_key_visual_to_note.get(i)
                     if note_idx is not None:
                         white_dots.append((cx, cy, note_idx))
 
-    # Process white keys (detecting dark dots within the defined ROI on white keys)
+    # --- Processing for White Keys (Dark Dot Detection) ---
     for i, (wx, wy, ww, wh) in enumerate(white_keys):
         roi_y_start = int(wy + wh * white_key_dot_roi_y_start_ratio)
         roi_y_end = int(wy + wh * white_key_dot_roi_y_end_ratio)
@@ -352,15 +364,17 @@ def detect_dots(warped_image, white_keys, black_keys):
         roi_x_start = max(0, roi_x_start)
         roi_y_end = min(h, roi_y_end)
         roi_x_end = min(w, roi_x_end)
-
         if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start:
             continue
 
         key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
-
-        # Invert threshold for dark dots on a bright background.
-        black_thresh = cv2.adaptiveThreshold(key_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                             cv2.THRESH_BINARY_INV, block_size, C_val)
+        # Use adaptive thresholding (inverted) for dark dot detection.
+        black_thresh = cv2.adaptiveThreshold(
+            key_roi, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            block_size, C_val
+        )
         black_thresh = cv2.morphologyEx(black_thresh, cv2.MORPH_OPEN, kernel)
 
         black_contours, _ = cv2.findContours(black_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -376,6 +390,7 @@ def detect_dots(warped_image, white_keys, black_keys):
                     black_dots.append((cx, cy, i))
 
     return white_dots, black_dots
+
 
 
 
