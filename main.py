@@ -273,120 +273,110 @@ def detect_keys_from_sheet(warped_image):
 
 def detect_dots(warped_image, white_keys, black_keys):
     """
-    Detect the white and black dots on the corrected piano sheet,
-    assuming an inverted view (dots on white keys near top, dots on black keys within bottom area).
+    Detect the white and black dots on the corrected piano sheet using adaptive thresholding 
+    and morphological operations to improve reliability.
+    
+    This function processes two regions:
+      1. Black keys region: expected to have bright (white) dots.
+      2. White keys region: expected to have dark (black) dots.
     """
     if warped_image is None:
         return [], []
 
     gray_roi = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
-    h, w = gray_roi.shape # Get height for ROI calculation
+    h, w = gray_roi.shape
 
-    # Lists to store dots with their key indices
-    white_dots = []  # White dots (expected on black keys - bottom area)
-    black_dots = []  # Black dots (expected on white keys - top area)
+    white_dots = []  # Dots expected on black keys (bright dots)
+    black_dots = []  # Dots expected on white keys (dark dots)
 
-    # --- Dot Detection Parameters ---
     min_dot_area = 15
     max_dot_area = 250
-    white_dot_threshold = 180 # Threshold for finding light areas (dots)
-    black_dot_threshold = 70  # Threshold for finding dark areas (dots)
 
-    # ROI ratios - adjust based on where dots are placed on your sheet
-    # For black keys (at bottom): search within the black key vertical space
-    # black_key_dot_roi_y_start_ratio = 0.1 # Start searching 10% down from the top *of the black key*
-    # black_key_dot_roi_y_end_ratio = 0.9   # Stop searching 10% up from the bottom *of the black key*
-    # # For white keys (at top): search near the top edge
-    # white_key_dot_roi_y_start_ratio = 0.05 # Start searching 5% down from the top *of the image*
-    # white_key_dot_roi_y_end_ratio = 0.4   # Stop searching 40% down from the top *of the image*
+    # Adaptive thresholding parameters.
+    # block_size must be odd. C_val is subtracted from the mean.
+    block_size = 11  
+    C_val = 2        
 
-    # Mapping black key visual index to NOTES index
-    # black_key_note_indices = [7, 8, 9, 10, 11] # C#, D#, F#, G#, A#
-    # black_key_visual_to_note = {
-    #     visual_idx: note_idx
-    #     for visual_idx, note_idx in enumerate(black_key_note_indices)
-    # }
+    # Kernel for morphological operations (helps remove small noise)
+    kernel = np.ones((3, 3), np.uint8)
 
-    # Process black keys (bottom area) to find white dots
+    # Process black keys (detecting white dots within the defined ROI on black keys)
     for i, (bx, by, bw, bh) in enumerate(black_keys):
-        # Define ROI within this specific black key's bounding box
+        # Define ROI using ratios (these global ratios are defined in your file)
         roi_y_start = int(by + bh * black_key_dot_roi_y_start_ratio)
         roi_y_end = int(by + bh * black_key_dot_roi_y_end_ratio)
         roi_x_start = bx
         roi_x_end = bx + bw
 
-        # Ensure ROI coordinates are valid
+        # Clamp ROI coordinates to image bounds.
         roi_y_start = max(0, roi_y_start)
         roi_x_start = max(0, roi_x_start)
         roi_y_end = min(h, roi_y_end)
         roi_x_end = min(w, roi_x_end)
 
-        if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start: continue # Skip if ROI is invalid
+        if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start:
+            continue
 
         key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
-        if key_roi.size == 0: continue
 
-        # Threshold to find white things in the ROI
-        _, white_thresh = cv2.threshold(key_roi, white_dot_threshold, 255, cv2.THRESH_BINARY)
+        # Adaptive thresholding extracts bright (white) dots.
+        white_thresh = cv2.adaptiveThreshold(key_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                             cv2.THRESH_BINARY, block_size, C_val)
+        # Morphological opening to remove small noise.
+        white_thresh = cv2.morphologyEx(white_thresh, cv2.MORPH_OPEN, kernel)
 
-        # Find contours
         white_contours, _ = cv2.findContours(white_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
         for contour in white_contours:
             area = cv2.contourArea(contour)
             if min_dot_area < area < max_dot_area:
                 m = cv2.moments(contour)
                 if m["m00"] > 0:
-                    # Calculate center relative to the ROI, then convert to full warped image coords
                     cx_roi = int(m["m10"] / m["m00"])
                     cy_roi = int(m["m01"] / m["m00"])
                     cx = cx_roi + roi_x_start
                     cy = cy_roi + roi_y_start
 
-                    # Get the correct note index for this black key visual index 'i'
+                    # Get the corresponding note index for the current black key visual index.
                     note_idx = black_key_visual_to_note.get(i)
                     if note_idx is not None:
                         white_dots.append((cx, cy, note_idx))
 
-    # Process white keys (top area) to find black dots
+    # Process white keys (detecting dark dots within the defined ROI on white keys)
     for i, (wx, wy, ww, wh) in enumerate(white_keys):
-        # Define ROI within the top portion of the white key's area
-        roi_y_start = int(wy + wh * white_key_dot_roi_y_start_ratio) # wy is 0
-        roi_y_end = int(wy + wh * white_key_dot_roi_y_end_ratio)   # wh is image height
+        roi_y_start = int(wy + wh * white_key_dot_roi_y_start_ratio)
+        roi_y_end = int(wy + wh * white_key_dot_roi_y_end_ratio)
         roi_x_start = wx
         roi_x_end = wx + ww
 
-        # Ensure ROI coordinates are valid
         roi_y_start = max(0, roi_y_start)
         roi_x_start = max(0, roi_x_start)
-        roi_y_end = min(h, roi_y_end) # Clamp to image height
+        roi_y_end = min(h, roi_y_end)
         roi_x_end = min(w, roi_x_end)
 
-        if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start: continue # Skip if ROI is invalid
+        if roi_y_end <= roi_y_start or roi_x_end <= roi_x_start:
+            continue
 
         key_roi = gray_roi[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
-        if key_roi.size == 0: continue
 
-        # Threshold to find dark things in the ROI
-        _, black_thresh = cv2.threshold(key_roi, black_dot_threshold, 255, cv2.THRESH_BINARY_INV) # Inverted threshold
+        # Invert threshold for dark dots on a bright background.
+        black_thresh = cv2.adaptiveThreshold(key_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                             cv2.THRESH_BINARY_INV, block_size, C_val)
+        black_thresh = cv2.morphologyEx(black_thresh, cv2.MORPH_OPEN, kernel)
 
-        # Find contours
         black_contours, _ = cv2.findContours(black_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
         for contour in black_contours:
             area = cv2.contourArea(contour)
             if min_dot_area < area < max_dot_area:
                 m = cv2.moments(contour)
                 if m["m00"] > 0:
-                    # Calculate center relative to ROI, then convert to full warped image coords
                     cx_roi = int(m["m10"] / m["m00"])
                     cy_roi = int(m["m01"] / m["m00"])
                     cx = cx_roi + roi_x_start
                     cy = cy_roi + roi_y_start
-                    # White key index 'i' directly corresponds to note index 0-6
                     black_dots.append((cx, cy, i))
 
     return white_dots, black_dots
+
 
 
 def is_key_pressed(finger_tip, dots, threshold=25): # Reduced threshold slightly
