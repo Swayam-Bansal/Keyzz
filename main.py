@@ -7,10 +7,10 @@ import time
 # Initialize pygame mixer for sound playback
 pygame.mixer.init()
 
-# Define piano notes (C4 to B4 for simplicity)
+# Define piano notes (C4 to B4)
 NOTES = {
-    0: 'C4'
-    #   1: 'D4', 2: 'E4', 3: 'F4', 4: 'G4', 5: 'A4', 6: 'B4',
+    0: 'C4', 
+    # 1: 'D4', 2: 'E4', 3: 'F4', 4: 'G4', 5: 'A4', 6: 'B4',
     # 7: 'C#4', 8: 'D#4', 9: 'F#4', 10: 'G#4', 11: 'A#4'
 }
 
@@ -21,7 +21,14 @@ for key, note in NOTES.items():
         sounds[key] = pygame.mixer.Sound(f"sounds/{note}.wav")
     except:
         print(f"Warning: Sound file for {note} not found. Creating placeholder.")
-        sounds[key] = pygame.mixer.Sound(pygame.sndarray.make_sound(np.zeros((8000,), dtype=np.int16)))
+        # Create a simple sine wave for each note if file not found
+        sample_rate = 44100
+        duration = 0.5  # seconds
+        frequency = 261.63 * (2 ** (key / 12.0))  # C4 = 261.63 Hz, with equal temperament
+        t = np.linspace(0, duration, int(sample_rate * duration), False)
+        sine_wave = np.sin(2 * np.pi * frequency * t)
+        audio = np.asarray([32767 * sine_wave, 32767 * sine_wave]).T.astype(np.int16)
+        sounds[key] = pygame.mixer.Sound(pygame.sndarray.make_sound(audio))
 
 # Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
@@ -32,6 +39,16 @@ hands = mp_hands.Hands(
     min_detection_confidence=0.7,
     min_tracking_confidence=0.7
 )
+
+# Global variables for stabilized piano detection
+stabilized_sheet = None
+stabilized_white_keys = None
+stabilized_black_keys = None
+stabilized_white_dots = None
+stabilized_black_dots = None
+stabilization_counter = 0
+MAX_STABILIZATION_FRAMES = 30
+is_stabilized = False
 
 def detect_piano_sheet(image):
     """Detect the sheet with printed piano in the image"""
@@ -72,7 +89,7 @@ def detect_piano_sheet(image):
     return None
 
 def detect_keys_from_sheet(image, sheet_rect):
-    """Detect piano keys from the printed piano sheet - with inverted orientation"""
+    """Detect piano keys from the printed piano sheet"""
     if sheet_rect is None:
         return [], []
     
@@ -90,7 +107,6 @@ def detect_keys_from_sheet(image, sheet_rect):
         white_keys.append((key_x, y, white_key_width, h))
     
     # Create black keys (red in visualization)
-    # In inverted orientation, black keys should be at the BOTTOM part
     # Standard piano has black keys at positions 0, 1, 3, 4, 5 (when counting spaces between white keys)
     black_keys = []
     black_key_width = int(white_key_width * 0.6)
@@ -98,15 +114,17 @@ def detect_keys_from_sheet(image, sheet_rect):
     black_key_positions = [0, 1, 3, 4, 5]  # C#, D#, F#, G#, A#
     
     for pos in black_key_positions:
-        black_x = x + (pos * white_key_width) + (white_key_width * 0.7)
-        # Important change: Position black keys at BOTTOM of white keys instead of top
+        if pos >= num_white_keys - 1:
+            continue  # Skip if position would be out of bounds
+        black_x = x + white_key_width // 2 + pos * white_key_width
+        # Position black keys at BOTTOM of white keys 
         black_y = y + h - black_key_height  # Position at bottom of white keys
         black_keys.append((int(black_x - black_key_width/2), black_y, black_key_width, black_key_height))
     
     return white_keys, black_keys
 
 def detect_dots(image, sheet_rect, white_keys, black_keys):
-    """Detect the white and black dots on the piano sheet with inverted orientation"""
+    """Detect the white and black dots on the piano sheet"""
     if sheet_rect is None:
         return [], []
     
@@ -142,7 +160,7 @@ def detect_dots(image, sheet_rect, white_keys, black_keys):
         
         for contour in white_contours:
             area = cv2.contourArea(contour)
-            if 10 < area < 150:  # Adjust threshold based on your dot size
+            if 10 < area < 200:  # Adjust threshold based on your dot size
                 m = cv2.moments(contour)
                 if m["m00"] > 0:
                     cx = int(m["m10"] / m["m00"]) + key_x1 + x
@@ -174,7 +192,7 @@ def detect_dots(image, sheet_rect, white_keys, black_keys):
         
         for contour in black_contours:
             area = cv2.contourArea(contour)
-            if 10 < area < 150:  # Adjust threshold based on your dot size
+            if 10 < area < 200:  # Adjust threshold based on your dot size
                 m = cv2.moments(contour)
                 if m["m00"] > 0:
                     cx = int(m["m10"] / m["m00"]) + key_x1 + x
@@ -192,38 +210,76 @@ def is_key_pressed(finger_tip, dots, threshold=30):
             return True, key_idx
     return False, None
 
-def detect_finger_presses(hand_landmarks, image_shape, white_dots, black_dots):
-    """Detect if fingers are pressing on dots"""
-    if not hand_landmarks:
-        return []
+def stabilize_piano_sheet(image, current_sheet, white_keys, black_keys, white_dots, black_dots):
+    """Attempt to stabilize the piano sheet detection"""
+    global stabilized_sheet, stabilized_white_keys, stabilized_black_keys
+    global stabilized_white_dots, stabilized_black_dots, stabilization_counter, is_stabilized
     
-    pressed_keys = []
-    h, w, _ = image_shape
+    # If we don't have a current detection, reset stabilization
+    if current_sheet is None:
+        stabilization_counter = 0
+        is_stabilized = False
+        return None, [], [], [], []
     
-    # Get finger tip landmarks
-    finger_tips = [
-        hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP],
-        hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP],
-        hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP],
-        hand_landmarks.landmark[mp_hands.HandLandmark.RING_FINGER_TIP],
-        hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP]
-    ]
+    # If we're already stabilized, return the stable values
+    if is_stabilized:
+        return stabilized_sheet, stabilized_white_keys, stabilized_black_keys, stabilized_white_dots, stabilized_black_dots
     
-    for finger_id, landmark in enumerate(finger_tips):
-        # Convert normalized coordinates to pixel coordinates
-        finger_x, finger_y = int(landmark.x * w), int(landmark.y * h)
+    # If this is our first detection, initialize stabilization
+    if stabilization_counter == 0:
+        stabilized_sheet = current_sheet
+        stabilized_white_keys = white_keys
+        stabilized_black_keys = black_keys
+        stabilized_white_dots = white_dots
+        stabilized_black_dots = black_dots
+        stabilization_counter += 1
+        return current_sheet, white_keys, black_keys, white_dots, black_dots
+    
+    # Check if current detection is similar to stabilized values
+    x1, y1, w1, h1 = current_sheet
+    x2, y2, w2, h2 = stabilized_sheet
+    
+    # Calculate overlap and size difference
+    overlap_x = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
+    overlap_y = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+    overlap_area = overlap_x * overlap_y
+    area1 = w1 * h1
+    area2 = w2 * h2
+    
+    # If there's significant overlap and similar size, count towards stabilization
+    if (overlap_area > 0.7 * min(area1, area2)) and (0.8 < (area1 / area2) < 1.25):
+        stabilization_counter += 1
         
-        # Check white dots (on black keys)
-        is_pressed, key_idx = is_key_pressed((finger_x, finger_y), white_dots)
-        if is_pressed and key_idx is not None:
-            pressed_keys.append(key_idx)
+        # Smooth the values (weighted average)
+        weight = min(0.9, stabilization_counter / MAX_STABILIZATION_FRAMES)
+        x = int(x2 * weight + x1 * (1 - weight))
+        y = int(y2 * weight + y1 * (1 - weight))
+        w = int(w2 * weight + w1 * (1 - weight))
+        h = int(h2 * weight + h1 * (1 - weight))
         
-        # Check black dots (on white keys)
-        is_pressed, key_idx = is_key_pressed((finger_x, finger_y), black_dots)
-        if is_pressed and key_idx is not None:
-            pressed_keys.append(key_idx)
-    
-    return pressed_keys
+        stabilized_sheet = (x, y, w, h)
+        
+        # If we've reached the threshold, mark as stabilized
+        if stabilization_counter >= MAX_STABILIZATION_FRAMES:
+            is_stabilized = True
+            print("Piano keyboard detection stabilized!")
+            
+            # Re-detect keys and dots with final stabilized sheet
+            stabilized_white_keys, stabilized_black_keys = detect_keys_from_sheet(image, stabilized_sheet)
+            stabilized_white_dots, stabilized_black_dots = detect_dots(image, stabilized_sheet, 
+                                                                   stabilized_white_keys, stabilized_black_keys)
+            
+        return stabilized_sheet, stabilized_white_keys, stabilized_black_keys, stabilized_white_dots, stabilized_black_dots
+    else:
+        # If detection is very different, reset stabilization
+        stabilization_counter = 0
+        is_stabilized = False
+        stabilized_sheet = current_sheet
+        stabilized_white_keys = white_keys
+        stabilized_black_keys = black_keys
+        stabilized_white_dots = white_dots
+        stabilized_black_dots = black_dots
+        return current_sheet, white_keys, black_keys, white_dots, black_dots
 
 def main():
     # For webcam input
@@ -252,20 +308,37 @@ def main():
         # Process the image for hand landmarks
         results = hands.process(image_rgb)
         
-        # Detect the piano sheet
-        sheet_rect = detect_piano_sheet(image)
+        # Detect the piano sheet (but only if not stabilized)
+        if not is_stabilized:
+            current_sheet = detect_piano_sheet(image)
+            if current_sheet is not None:
+                # Detect piano keys
+                white_keys, black_keys = detect_keys_from_sheet(image, current_sheet)
+                # Detect dots
+                white_dots, black_dots = detect_dots(image, current_sheet, white_keys, black_keys)
+                # Try to stabilize
+                sheet_rect, white_keys, black_keys, white_dots, black_dots = stabilize_piano_sheet(
+                    image, current_sheet, white_keys, black_keys, white_dots, black_dots)
+            else:
+                sheet_rect, white_keys, black_keys, white_dots, black_dots = None, [], [], [], []
+        else:
+            # Use existing stabilized values
+            sheet_rect = stabilized_sheet
+            white_keys = stabilized_white_keys
+            black_keys = stabilized_black_keys
+            white_dots = stabilized_white_dots
+            black_dots = stabilized_black_dots
         
-        # Initialize dots
-        white_dots, black_dots = [], []
-        white_keys, black_keys = [], []
+        # Display stabilization progress
+        if not is_stabilized and stabilization_counter > 0:
+            progress = min(100, int(stabilization_counter / MAX_STABILIZATION_FRAMES * 100))
+            cv2.putText(image, f"Stabilizing piano... {progress}%", (10, 60), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         if sheet_rect is not None:
             x, y, w, h = sheet_rect
             # Draw rectangle around the detected piano sheet
             cv2.rectangle(image, (int(x), int(y)), (int(x + w), int(y + h)), (0, 255, 0), 2)
-            
-            # Detect piano keys with inverted orientation
-            white_keys, black_keys = detect_keys_from_sheet(image, sheet_rect)
             
             # Draw white keys (in blue)
             for wx, wy, ww, wh in white_keys:
@@ -274,9 +347,6 @@ def main():
             # Draw black keys (in red)
             for bx, by, bw, bh in black_keys:
                 cv2.rectangle(image, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
-            
-            # Detect dots with inverted orientation
-            white_dots, black_dots = detect_dots(image, sheet_rect, white_keys, black_keys)
             
             # Draw dots
             for wx, wy, _ in white_dots:
@@ -303,8 +373,8 @@ def main():
         # Track currently pressed keys
         currently_pressed_keys = set()
         
-        # Process hand landmarks
-        if results.multi_hand_landmarks:
+        # Process hand landmarks only after stabilization
+        if is_stabilized and results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
                 # Draw hand landmarks
                 mp_drawing.draw_landmarks(
@@ -352,19 +422,24 @@ def main():
                                 wx, wy, ww, wh = white_keys[key_idx]
                                 cv2.rectangle(image, (wx, wy), (wx + ww, wy + wh), (0, 255, 255), 3)
         
-        # Play sounds for newly pressed keys
-        for key in currently_pressed_keys - previously_pressed_keys:
-            if key in sounds and (time.time() - last_press_time.get(key, 0)) > 0.3:  # Debounce
-                sounds[key].play()
-                last_press_time[key] = time.time()
-                print(f"Playing note: {NOTES.get(key, 'Unknown')}")
+        # Play sounds for newly pressed keys (only after stabilized)
+        if is_stabilized:
+            for key in currently_pressed_keys - previously_pressed_keys:
+                if key in sounds and (time.time() - last_press_time.get(key, 0)) > 0.3:  # Debounce
+                    sounds[key].play()
+                    last_press_time[key] = time.time()
+                    print(f"Playing note: {NOTES.get(key, 'Unknown')}")
         
         # Update previously pressed keys
         previously_pressed_keys = currently_pressed_keys
         
-        # Add text instruction
-        cv2.putText(image, "Press 'q' to quit", (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        # Add status text
+        if is_stabilized:
+            cv2.putText(image, "Piano Detection Active - Press 'q' to quit", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        else:
+            cv2.putText(image, "Hold piano sheet steady to calibrate", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Display the resulting frame
         cv2.imshow('Piano Detection', image)
