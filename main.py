@@ -270,6 +270,7 @@ def detect_keys_from_sheet(warped_image):
 
     return white_keys, black_keys
 
+
 def detect_dots(warped_image, white_keys, black_keys):
     """
     Detect the white and black dots on the perspective-corrected piano sheet.
@@ -391,29 +392,43 @@ def detect_dots(warped_image, white_keys, black_keys):
     return white_dots, black_dots
 
 
-def detect_pressed_key(fingertip, white_keys, black_keys):
+def detect_pressed_key(fingertip, white_keys, black_keys, margin=0.15):
     """
-    Determines which key (if any) is being pressed by checking
-    if the fingertip coordinate is within any key's bounding box.
-    For overlapping cases, returns the key whose center is nearest to the fingertip.
+    Determine which key (if any) is pressed based on the fingertip's warped coordinates.
+    Uses an inner region of each key's bounding box defined by a margin factor.
+    
+    Args:
+        fingertip (tuple): The (x, y) coordinates in the warped image.
+        white_keys (list): List of white key rectangles (x, y, w, h) for indices 0-6.
+        black_keys (list): List of black key rectangles (x, y, w, h).
+        margin (float): Fraction of the key's dimensions to ignore at each edge.
     
     Returns:
-        key_idx (int): the note index corresponding to the key that is pressed, or None if none.
+        int or None: The note index (white or mapped from black key) if detected; otherwise, None.
     """
     candidates = []
     
-    # Check white keys (note indices 0 through 6)
+    # Process white keys (note indices 0 to 6)
     for key_idx, (x, y, w, h) in enumerate(white_keys):
-        if x <= fingertip[0] <= x + w and y <= fingertip[1] <= y + h:
+        # Define an inner rectangle that is reduced by 'margin' from each edge.
+        inner_x = x + w * margin
+        inner_y = y + h * margin
+        inner_w = w * (1 - 2 * margin)
+        inner_h = h * (1 - 2 * margin)
+        if inner_x <= fingertip[0] <= inner_x + inner_w and inner_y <= fingertip[1] <= inner_y + inner_h:
+            # Use the key's center for a distance measure.
             center = (x + w / 2, y + h / 2)
             dist = np.hypot(fingertip[0] - center[0], fingertip[1] - center[1])
             candidates.append((dist, key_idx))
     
-    # Check black keys; note that our mapping is stored in black_key_visual_to_note.
-    # The index here (0 to len(black_keys)-1) is mapped to a note index.
+    # Process black keys; note that our mapping from visual index to note index is provided in black_key_visual_to_note.
     for visual_idx, key_rect in enumerate(black_keys):
         x, y, w, h = key_rect
-        if x <= fingertip[0] <= x + w and y <= fingertip[1] <= y + h:
+        inner_x = x + w * margin
+        inner_y = y + h * margin
+        inner_w = w * (1 - 2 * margin)
+        inner_h = h * (1 - 2 * margin)
+        if inner_x <= fingertip[0] <= inner_x + inner_w and inner_y <= fingertip[1] <= inner_y + inner_h:
             center = (x + w / 2, y + h / 2)
             dist = np.hypot(fingertip[0] - center[0], fingertip[1] - center[1])
             note_idx = black_key_visual_to_note.get(visual_idx)
@@ -421,8 +436,10 @@ def detect_pressed_key(fingertip, white_keys, black_keys):
                 candidates.append((dist, note_idx))
     
     if candidates:
+        # If more than one candidate is found, choose the one whose center is closest to the fingertip.
         candidates.sort(key=lambda c: c[0])
         return candidates[0][1]
+    
     return None
 
 
@@ -762,13 +779,13 @@ def main():
             all_dots = white_dots + black_dots # Combine dot lists for checking
 
             for hand_landmarks in results.multi_hand_landmarks:
-                # Draw landmarks on main image
                 mp_drawing.draw_landmarks(
                     image, hand_landmarks, mp_hands.HAND_CONNECTIONS,
-                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=2), # Smaller landmarks
-                    mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1))
+                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=2),
+                    mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1)
+                )
 
-                # List the fingertip landmarks you want to use
+                # List the fingertips to process.
                 finger_tips_landmarks = [
                     hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP],
                     hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP],
@@ -777,23 +794,28 @@ def main():
                 ]
 
                 for landmark in finger_tips_landmarks:
+                    # Convert normalized coordinates to image coordinates.
                     orig_x, orig_y = int(landmark.x * w), int(landmark.y * h)
+                    # Transform to warped (perspective corrected) coordinates.
                     transformed_coords = transform_point((orig_x, orig_y), current_transform_matrix)
                     if transformed_coords is not None:
                         warped_x, warped_y = transformed_coords
+
+                        # Optionally, draw the fingertip for debugging.
                         cv2.circle(image, (orig_x, orig_y), 5, (255, 255, 0), -1)
                         if 0 <= warped_x < canvas_width and 0 <= warped_y < canvas_height:
                             cv2.circle(vis_piano, (warped_x, warped_y), 5, (255, 255, 0), -1)
                         
-                        # Use the new detection method based on key boundaries
-                        key_idx = detect_pressed_key((warped_x, warped_y), white_keys, black_keys)
+                        # Use our new method to detect a key press from the fingertip.
+                        key_idx = detect_pressed_key((warped_x, warped_y), white_keys, black_keys, margin=0.15)
                         if key_idx is not None:
                             currently_pressed_keys.add(key_idx)
-                            # Optionally, highlight the key rectangle:
+                            # Optionally highlight the detected key.
                             if key_idx < 7 and key_idx < len(white_keys):
                                 x, y, ww, hh = white_keys[key_idx]
                                 cv2.rectangle(vis_piano, (x, y), (x + ww, y + hh), (0, 255, 255), 2)
                             elif key_idx >= 7:
+                                # Map back to the appropriate black key rectangle.
                                 visual_idx = None
                                 for v_idx, n_idx in black_key_visual_to_note.items():
                                     if n_idx == key_idx:
