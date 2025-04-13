@@ -7,7 +7,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(mes
 
 class AudioManager:
     """Handles audio initialization, sound loading, and debounced playback."""
-    def __init__(self, sounds_folder: str = "sounds", debounce_interval: float = 0.2):
+    def __init__(self, sounds_folder: str = "sounds", debounce_interval: float = 0.1):
         pygame.mixer.init()
         self.sounds_folder = sounds_folder
         self.debounce_interval = debounce_interval
