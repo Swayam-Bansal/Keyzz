@@ -170,12 +170,37 @@ class PianoApp:
             current_frame_time = time.time()
             dt = current_frame_time - last_frame_time
             last_frame_time = current_frame_time
+            # In PianoApp.run() - Find the section where you update the score display
             if self.game_started:
                 self.game_manager.update(dt, white_keys, black_keys, pressed_keys)
                 self.game_manager.draw_notes(vis_piano, white_keys, black_keys)
+                
+                # Enhanced display with combo and mistakes
                 score = self.game_manager.get_score()
+                combo = self.game_manager.get_combo()
+                mistakes_left = self.game_manager.get_mistakes_left()
+                
+                # Display score and combo
                 cv2.putText(vis_piano, f"Score: {score}", (10, 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(vis_piano, f"Combo: {combo}", (10, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                # Display mistakes left
+                mistake_text = f"Lives: {mistakes_left}"
+                mistake_color = (0, 255, 0) if mistakes_left > 1 else (0, 0, 255)
+                cv2.putText(vis_piano, mistake_text, (10, 80),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, mistake_color, 2)
+                
+                # Check if game is over
+                if self.game_manager.is_game_over():
+                    cv2.putText(vis_piano, "GAME OVER!", (vis_piano.shape[1]//2 - 100, vis_piano.shape[0]//2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                    
+                    cv2.putText(vis_piano, "Press 'r' to restart", (vis_piano.shape[1]//2 - 80, vis_piano.shape[0]//2 + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+                    max_combo = self.game_manager.get_max_combo()
+                    cv2.putText(vis_piano, f"Max Combo: {max_combo}", (vis_piano.shape[1]//2 - 80, vis_piano.shape[0]//2 + 70),cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
             # Display status on the main frame.
             if self.freeze_calibration:
