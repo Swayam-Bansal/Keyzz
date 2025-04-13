@@ -20,7 +20,7 @@ class GameManager:
       - Checking for key hits
       - Calculating score
     """
-    def __init__(self, path_to_song="songs/sample_song.json", speed=80.0):
+    def __init__(self, path_to_song="songs/twinkle_twinkle_little_star.json", speed=80.0):
         """
         Args:
             path_to_song (str): Path to the song JSON data.
