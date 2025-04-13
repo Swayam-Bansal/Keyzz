@@ -24,41 +24,23 @@ black_key_visual_to_note = {
 # Dot Detection ROI Ratios (relative to key/image dimensions)
 # For black keys (at bottom): search within the black key vertical space
 black_key_dot_roi_y_start_ratio = 0.1 # Start searching 10% down from the top *of the black key*
-black_key_dot_roi_y_end_ratio = 0.9   # Stop searching 10% up from the bottom *of the black key*
+black_key_dot_roi_y_end_ratio = 0.4   # Stop searching 10% up from the bottom *of the black key*
 # For white keys (at top): search near the top edge
 white_key_dot_roi_y_start_ratio = 0.05 # Start searching 5% down from the top *of the image*
-white_key_dot_roi_y_end_ratio = 0.4   # Stop searching 40% down from the top *of the image*
+white_key_dot_roi_y_end_ratio = 0.3   # Stop searching 40% down from the top *of the image*
 # -----------------------------
 
 
 # Load sound files (placeholder for actual sound files)
 sounds = {}
-print("Loading/Generating sounds...")
+print("Loading sounds...")
 for key, note in NOTES.items():
     try:
         sounds[key] = pygame.mixer.Sound(f"sounds/{note}.wav")
         print(f"Loaded sound for {note}")
     except pygame.error: # Catch pygame specific error for file not found
-        print(f"Warning: Sound file for {note} not found. Creating placeholder.")
-        # Create a simple sine wave for each note if file not found
-        sample_rate = 44100
-        duration = 0.5  # seconds
-        # Calculate frequency using C4=261.63 and equal temperament
-        frequency = 261.63 * (2 ** ((key if key < 7 else key - 7 + (0 if key==7 else 1 if key==8 else 3 if key==9 else 4 if key==10 else 5)) / 12.0))
-        # Adjust frequency for black keys correctly relative to C4
-        # C#: key=7 -> 1/12 | D#: key=8 -> 3/12 | F#: key=9 -> 6/12 | G#: key=10 -> 8/12 | A#: key=11 -> 10/12 steps from C4
-        if key == 7: frequency = 261.63 * (2**(1/12.0)) # C#4
-        elif key == 8: frequency = 261.63 * (2**(3/12.0)) # D#4
-        elif key == 9: frequency = 261.63 * (2**(6/12.0)) # F#4
-        elif key == 10: frequency = 261.63 * (2**(8/12.0)) # G#4
-        elif key == 11: frequency = 261.63 * (2**(10/12.0)) # A#4
-        elif key > 0: frequency = 261.63 * (2**(key * 2 / 12.0 if key <= 2 else (key*2-1)/12.0)) # D, E, F, G, A, B
-
-        t = np.linspace(0, duration, int(sample_rate * duration), False)
-        sine_wave = 0.5 * np.sin(2 * np.pi * frequency * t) # Reduced amplitude slightly
-        # Ensure stereo, int16 format
-        audio = np.asarray([32767 * sine_wave, 32767 * sine_wave]).T.astype(np.int16)
-        sounds[key] = pygame.sndarray.make_sound(audio)
+        print(f"Warning: Sound file for {note} not found")
+        
 print("Sound loading complete.")
 
 
