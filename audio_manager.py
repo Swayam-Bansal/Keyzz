@@ -1,6 +1,3 @@
-import cv2
-import numpy as np
-import mediapipe as mp
 import pygame
 import time
 import logging
