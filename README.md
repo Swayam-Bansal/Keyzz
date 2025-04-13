@@ -4,7 +4,7 @@ Piano Sheet Detector and Interactive Player
 --------------------------------------------------------
 This module provides a modularized implementation of the piano detection and key-press audio
 playback system. The code is organized into distinct classes:
- 
+
   • AudioManager        - Initializes the audio subsystem, loads sounds, handles debouncing and playback.
   • PianoDetector       - Detects the piano sheet corners, piano keys, and dot positions.
   • PerspectiveTransformer
