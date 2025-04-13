@@ -23,12 +23,12 @@ class Visualizer:
             cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), (50, 50, 50), -1)
             cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), (200, 200, 200), 1)
         dot_radius = 6
-        for dx, dy, _ in white_dots:
-            cv2.circle(canvas, (dx, dy), dot_radius, (255, 255, 255), -1)
-            cv2.circle(canvas, (dx, dy), dot_radius, (0, 0, 0), 1)
-        for dx, dy, _ in black_dots:
-            cv2.circle(canvas, (dx, dy), dot_radius, (0, 0, 0), -1)
-            cv2.circle(canvas, (dx, dy), dot_radius, (255, 255, 255), 1)
+        # for dx, dy, _ in white_dots:
+        #     cv2.circle(canvas, (dx, dy), dot_radius, (255, 255, 255), -1)
+        #     cv2.circle(canvas, (dx, dy), dot_radius, (0, 0, 0), 1)
+        # for dx, dy, _ in black_dots:
+        #     cv2.circle(canvas, (dx, dy), dot_radius, (0, 0, 0), -1)
+        #     cv2.circle(canvas, (dx, dy), dot_radius, (255, 255, 255), 1)
         if finger_points:
             for pt in finger_points:
                 cv2.circle(canvas, pt, 5, (255, 255, 0), -1)
