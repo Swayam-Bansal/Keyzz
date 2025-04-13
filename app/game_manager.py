@@ -15,6 +15,7 @@ class NoteObject:
         self.hit = False
         self.missed = False  # New field to track if note was missed
         self.prev_pressed_keys = set()
+        self.finished = False
 
 class GameManager:
     """
@@ -76,6 +77,7 @@ class GameManager:
         self.game_over = False
         self.last_hit_judgment = ""
         self.last_hit_time = 0
+        self.finished = False
         # Reset all notes
         for note in self.notes:
             note.active = False
@@ -175,6 +177,12 @@ class GameManager:
                 time_until_judgment = note.start_time - current_time
                 note.y_position = (-self.speed * time_until_judgment) + self.judgment_line_y
 
+        # --- Check if the song is finished ---
+        if not self.finished and all(note.hit or note.missed for note in self.notes):
+            self.finished = True
+            logging.info("Song finished!")
+
+
 
     def draw_notes(self, canvas, white_keys, black_keys):
         """
@@ -258,6 +266,11 @@ class GameManager:
         """Draw score, combo, and lives on the canvas."""
         if canvas is None:
             return canvas
+        
+        # If the song is complete, show the end screen overlay.
+        if self.finished:
+            canvas = self._draw_end_screen(canvas)
+            return canvas
             
         # Draw score
         cv2.putText(canvas, f"Score: {self.score}", (10, 20),
@@ -311,6 +324,40 @@ class GameManager:
         restart_y = score_y + 40
         cv2.putText(canvas, restart_text, (restart_x, restart_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+
+    def _draw_end_screen(self, canvas):
+        # Overlay semi-transparent dark background
+        overlay = canvas.copy()
+        cv2.rectangle(overlay, (0, 0), (self.canvas_width, self.canvas_height), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.5, canvas, 0.5, 0, canvas)
+        
+        # Song complete text
+        end_text = "SONG COMPLETE!"
+        text_size = cv2.getTextSize(end_text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 3)[0]
+        text_x = (self.canvas_width - text_size[0]) // 2
+        text_y = self.canvas_height // 2 - 20
+        cv2.putText(canvas, end_text, (text_x, text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+        
+        # Final score text
+        final_score_text = f"Final Score: {self.score}"
+        score_size = cv2.getTextSize(final_score_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+        score_x = (self.canvas_width - score_size[0]) // 2
+        score_y = text_y + 40
+        cv2.putText(canvas, final_score_text, (score_x, score_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        
+        # Restart instructions
+        restart_text = "Press 'r' to restart"
+        restart_size = cv2.getTextSize(restart_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+        restart_x = (self.canvas_width - restart_size[0]) // 2
+        restart_y = score_y + 40
+        cv2.putText(canvas, restart_text, (restart_x, restart_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        return canvas
+
 
     def get_score(self):
         return self.score

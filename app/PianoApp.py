@@ -208,15 +208,26 @@ class PianoApp:
             if key == ord('q'):
                 break
             elif key == ord('r'):
-                # Reset calibration and game state
+                # Reset calibration and game state:
                 self.freeze_calibration = False
                 self.stabilizer.counter = 0
                 self.stabilizer.is_stable = False
                 self.frozen_corners = None
                 self.frozen_rect = None
                 self.frozen_transform = None
+
+                # Restart the game in GameManager:
+                self.game_manager.start_game()
+                # Additionally reset the finished flag if it is not reset in start_game
+                self.game_manager.finished = False
+
+                # Optional: Reset any auxiliary state such as previous key states
+                if hasattr(self.game_manager, 'prev_pressed_keys'):
+                    self.game_manager.prev_pressed_keys.clear()
+
                 self.game_started = False
-                logging.info("Game and calibration reset")
+                logging.info("Game, calibration, and state reset")
+                
 
         logging.info("Cleaning up...")
         cap.release()
