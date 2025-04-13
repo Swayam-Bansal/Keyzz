@@ -1,47 +1,44 @@
-import audio_manager
-import perspective_transformer
-import stabilizer
-import piano_detector
-import visualizer
-
+# app/PianoApp.py
 import cv2
-import numpy as np
-import mediapipe as mp
-import pygame
 import time
+import numpy as np
 import logging
 
-# Configure logging for detailed runtime information.
+import mediapipe as mp
+
+# Import our custom modules
+from audio_manager import AudioManager
+from perspective_transformer import PerspectiveTransformer
+from stabilizer import Stabilizer
+from piano_detector import PianoDetector
+from visualizer import Visualizer
+from game_manager import GameManager
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
-
-
-# ----------------------------
-# Main Piano Application
-# ----------------------------
 class PianoApp:
     """
-    Orchestrates video capture, piano sheet detection, stabilization, hand landmark processing,
-    key-press detection, audio playback, and visualization.
-    
-    New Feature: Calibration Freeze – Once stabilization is reached, the contour is frozen.
+    Main application that orchestrates video capture, piano sheet detection,
+    stabilization, hand landmark processing, interactive key detection, and game logic.
     """
     def __init__(self):
         self.canvas_width = 700
         self.canvas_height = 200
-        self.audio_manager = audio_manager.AudioManager()
-        self.detector = piano_detector.PianoDetector()
-        self.transformer = perspective_transformer.PerspectiveTransformer(self.canvas_width, self.canvas_height)
-        self.stabilizer = stabilizer.Stabilizer(max_frames=30)
-        self.visualizer = visualizer.Visualizer(self.canvas_width, self.canvas_height)
+        self.audio_manager = AudioManager()
+        self.detector = PianoDetector()
+        self.transformer = PerspectiveTransformer(self.canvas_width, self.canvas_height)
+        self.stabilizer = Stabilizer(max_frames=30)
+        self.visualizer = Visualizer(self.canvas_width, self.canvas_height)
+        self.game_manager = GameManager()  # Load our basic song
+        self.game_started = False
+
         self.prev_pressed_keys = set()
-        # Calibration freeze attributes.
         self.freeze_calibration = False
         self.frozen_corners = None
         self.frozen_rect = None
         self.frozen_transform = None
 
-        # Initialize MediaPipe Hands.
+        # Setup MediaPipe Hands
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
         self.hands = self.mp_hands.Hands(
@@ -57,20 +54,23 @@ class PianoApp:
             logging.error("Error: Could not open video source.")
             return
 
-        logging.info("Camera initialized. Waiting for warm-up...")
+        logging.info("Camera initialized. Warming up...")
         time.sleep(2.0)
         cv2.namedWindow('Piano Detection', cv2.WINDOW_NORMAL)
         cv2.namedWindow('Corrected Piano View', cv2.WINDOW_NORMAL)
 
+        last_frame_time = time.time()
+
+        # Cached key/dot detection results if calibration is frozen.
         stabilized_white_keys = None
         stabilized_black_keys = None
         stabilized_white_dots = None
         stabilized_black_dots = None
 
         while cap.isOpened():
-            success, frame = cap.read()
-            if not success:
-                logging.warning("Failed to capture frame; retrying...")
+            ret, frame = cap.read()
+            if not ret:
+                logging.warning("Frame capture failed, retrying...")
                 time.sleep(0.1)
                 continue
 
@@ -79,7 +79,7 @@ class PianoApp:
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.hands.process(image_rgb)
 
-            # Freeze calibration: if already frozen, use stored values.
+            # Handle calibration freeze
             if self.freeze_calibration:
                 stable_corners = self.frozen_corners
                 stable_rect = self.frozen_rect
@@ -92,7 +92,6 @@ class PianoApp:
                     stable_corners, stable_rect, stable_transform, warped_image = self.stabilizer.update(
                         frame, current_corners, current_rect, self.transformer)
                     transform_matrix = stable_transform
-                    # Freeze calibration when stabilization completes.
                     if self.stabilizer.is_stable:
                         self.freeze_calibration = True
                         self.frozen_corners = stable_corners.copy()
@@ -100,16 +99,10 @@ class PianoApp:
                         self.frozen_transform = stable_transform.copy()
                         logging.info("Calibration frozen. Using fixed piano contour.")
                 else:
-                    if not self.freeze_calibration:
-                        logging.info("No valid detection; waiting for calibration...")
-                        transform_matrix = None
-                        warped_image = None
-                        stabilized_white_keys = None
-                        stabilized_black_keys = None
-                        stabilized_white_dots = None
-                        stabilized_black_dots = None
+                    transform_matrix = None
+                    warped_image = None
 
-            # Key and dot detection.
+            # Key and dot detection on warped image
             white_keys, black_keys = [], []
             white_dots, black_dots = [], []
             if warped_image is not None:
@@ -126,10 +119,10 @@ class PianoApp:
                         stabilized_black_dots = black_dots
 
             vis_piano = self.visualizer.draw_piano_view(warped_image, white_keys, black_keys, white_dots, black_dots)
+            
             pressed_keys = set()
             finger_points = []
             if results.multi_hand_landmarks and transform_matrix is not None:
-                all_dots = white_dots + black_dots
                 for hand_landmarks in results.multi_hand_landmarks:
                     self.mp_drawing.draw_landmarks(
                         frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS,
@@ -157,16 +150,34 @@ class PianoApp:
                                 if key_idx < 7 and key_idx < len(white_keys):
                                     vis_piano = self.visualizer.highlight_key(vis_piano, white_keys[key_idx])
                                 elif key_idx >= 7:
+                                    # For black keys, map visual index accordingly.
                                     for visual_idx, n_idx in self.detector.BLACK_KEY_VISUAL_MAP.items():
                                         if n_idx == key_idx and visual_idx < len(black_keys):
                                             vis_piano = self.visualizer.highlight_key(vis_piano, black_keys[visual_idx])
                                             break
 
+            # Play sound for new key presses
             for key in pressed_keys - self.prev_pressed_keys:
                 self.audio_manager.play_sound(key)
             self.prev_pressed_keys = pressed_keys
 
-            # Status text based on calibration state.
+            # Start the game when calibration is frozen
+            if self.freeze_calibration and not self.game_started:
+                self.game_manager.start_game()
+                self.game_started = True
+
+            # Game update and drawing
+            current_frame_time = time.time()
+            dt = current_frame_time - last_frame_time
+            last_frame_time = current_frame_time
+            if self.game_started:
+                self.game_manager.update(dt, white_keys, black_keys, pressed_keys)
+                self.game_manager.draw_notes(vis_piano, white_keys, black_keys)
+                score = self.game_manager.get_score()
+                cv2.putText(vis_piano, f"Score: {score}", (10, 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            # Display status on the main frame.
             if self.freeze_calibration:
                 status = "Status: Calibrated (Frozen) - Playing"
                 status_color = (0, 255, 0)
@@ -178,7 +189,11 @@ class PianoApp:
                 status = "Status: Searching for Piano Sheet..."
                 status_color = (0, 0, 255)
             frame = self.visualizer.draw_status(frame, status, status_color)
-            frame = self.visualizer.draw_detection_outline(frame, self.frozen_corners if self.freeze_calibration else current_corners)
+            if self.freeze_calibration:
+                frame = self.visualizer.draw_detection_outline(frame, self.frozen_corners)
+            else:
+                frame = self.visualizer.draw_detection_outline(frame, current_corners)
+            
             cv2.imshow('Piano Detection', frame)
             cv2.imshow('Corrected Piano View', vis_piano)
 
@@ -186,29 +201,22 @@ class PianoApp:
             if key == ord('q'):
                 break
             elif key == ord('r'):
-                logging.info("Manual reset triggered. Clearing calibration freeze.")
+                # Reset calibration and game state
                 self.freeze_calibration = False
                 self.stabilizer.counter = 0
                 self.stabilizer.is_stable = False
                 self.frozen_corners = None
                 self.frozen_rect = None
                 self.frozen_transform = None
-                stabilized_white_keys = None
-                stabilized_black_keys = None
-                stabilized_white_dots = None
-                stabilized_black_dots = None
+                self.game_started = False
 
         logging.info("Cleaning up...")
         cap.release()
         cv2.destroyAllWindows()
         self.hands.close()
-        pygame.mixer.quit()
+        self.audio_manager  # Ensure Pygame quits automatically when process exits.
         logging.info("Done.")
 
-
-# ----------------------------
-# Entry Point
-# ----------------------------
 if __name__ == "__main__":
     app = PianoApp()
     app.run()

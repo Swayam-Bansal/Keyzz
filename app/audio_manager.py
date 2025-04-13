@@ -1,17 +1,13 @@
+# app/audio_manager.py
 import pygame
 import time
 import logging
 
-# Configure logging for detailed runtime information.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
-# ----------------------------
-# Audio Manager
-# ----------------------------
 class AudioManager:
-    """Handles audio initialization, sound loading, and playback with debouncing."""
-
-    def __init__(self, sounds_folder: str = "sounds", debounce_interval: float = 0.2):
+    """Handles audio initialization, sound loading, and debounced playback."""
+    def __init__(self, sounds_folder: str = "sounds", debounce_interval: float = 0.1):
         pygame.mixer.init()
         self.sounds_folder = sounds_folder
         self.debounce_interval = debounce_interval
@@ -24,7 +20,7 @@ class AudioManager:
         self.load_sounds()
 
     def load_sounds(self):
-        """Load sound files for each note from the sounds folder."""
+        """Load sound files from the specified folder."""
         logging.info("Loading sounds...")
         for key, note in self.notes.items():
             sound_path = f"{self.sounds_folder}/{note}.wav"
