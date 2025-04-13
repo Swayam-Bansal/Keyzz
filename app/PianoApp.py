@@ -170,9 +170,10 @@ class PianoApp:
             current_frame_time = time.time()
             dt = current_frame_time - last_frame_time
             last_frame_time = current_frame_time
-            # In PianoApp.run() - Find the section where you update the score display
+
             if self.game_started:
                 self.game_manager.update(dt, white_keys, black_keys, pressed_keys)
+                vis_piano = cv2.flip(vis_piano, 0)
                 self.game_manager.draw_notes(vis_piano, white_keys, black_keys)
                 
                 # Game update and drawing
@@ -202,6 +203,8 @@ class PianoApp:
                 frame = self.visualizer.draw_detection_outline(frame, current_corners)
             
             cv2.imshow('Piano Detection', frame)
+            # mirrored_view = cv2.flip(vis_piano, 0)
+            # cv2.imshow('Corrected Piano View', mirrored_view)
             cv2.imshow('Corrected Piano View', vis_piano)
 
             key = cv2.waitKey(5) & 0xFF
