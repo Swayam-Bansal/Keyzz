@@ -170,12 +170,19 @@ class PianoApp:
             current_frame_time = time.time()
             dt = current_frame_time - last_frame_time
             last_frame_time = current_frame_time
+            # In PianoApp.run() - Find the section where you update the score display
             if self.game_started:
                 self.game_manager.update(dt, white_keys, black_keys, pressed_keys)
                 self.game_manager.draw_notes(vis_piano, white_keys, black_keys)
-                score = self.game_manager.get_score()
-                cv2.putText(vis_piano, f"Score: {score}", (10, 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                # Game update and drawing
+                current_frame_time = time.time()
+                dt = current_frame_time - last_frame_time
+                last_frame_time = current_frame_time
+                if self.game_started:
+                    self.game_manager.update(dt, white_keys, black_keys, pressed_keys)
+                    vis_piano = self.game_manager.draw_notes(vis_piano, white_keys, black_keys)
+                    vis_piano = self.game_manager.draw_score_and_lives(vis_piano)
 
             # Display status on the main frame.
             if self.freeze_calibration:
@@ -201,14 +208,26 @@ class PianoApp:
             if key == ord('q'):
                 break
             elif key == ord('r'):
-                # Reset calibration and game state
+                # Reset calibration and game state:
                 self.freeze_calibration = False
                 self.stabilizer.counter = 0
                 self.stabilizer.is_stable = False
                 self.frozen_corners = None
                 self.frozen_rect = None
                 self.frozen_transform = None
+
+                # Restart the game in GameManager:
+                self.game_manager.start_game()
+                # Additionally reset the finished flag if it is not reset in start_game
+                self.game_manager.finished = False
+
+                # Optional: Reset any auxiliary state such as previous key states
+                if hasattr(self.game_manager, 'prev_pressed_keys'):
+                    self.game_manager.prev_pressed_keys.clear()
+
                 self.game_started = False
+                logging.info("Game, calibration, and state reset")
+                
 
         logging.info("Cleaning up...")
         cap.release()
