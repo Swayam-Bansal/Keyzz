@@ -392,7 +392,7 @@ def detect_dots(warped_image, white_keys, black_keys):
     return white_dots, black_dots
 
 
-def detect_pressed_key(fingertip, white_keys, black_keys, margin=0.15):
+def detect_pressed_key(fingertip, white_keys, black_keys, margin=0.05):
     """
     Determine which key (if any) is pressed based on the fingertip's warped coordinates.
     Uses an inner region of each key's bounding box defined by a margin factor.
@@ -807,7 +807,7 @@ def main():
                             cv2.circle(vis_piano, (warped_x, warped_y), 5, (255, 255, 0), -1)
                         
                         # Use our new method to detect a key press from the fingertip.
-                        key_idx = detect_pressed_key((warped_x, warped_y), white_keys, black_keys, margin=0.15)
+                        key_idx = detect_pressed_key((warped_x, warped_y), white_keys, black_keys, margin=0.05)
                         if key_idx is not None:
                             currently_pressed_keys.add(key_idx)
                             # Optionally highlight the detected key.
