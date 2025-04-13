@@ -16,8 +16,22 @@ class AudioManager:
             7: 'C#4', 8: 'D#4', 9: 'F#4', 10: 'G#4', 11: 'A#4'
         }
         self.sounds = {}
+        self.channels = {}  # Track which channel each key is using
         self.last_press_time = {}
         self.load_sounds()
+
+    def play_sound(self, key: int):
+        """Play the sound corresponding to the given key, stopping previous instance."""
+        current_time = time.time()
+        if key in self.sounds and (current_time - self.last_press_time.get(key, 0)) > self.debounce_interval:
+            # If this key was playing on a channel, stop that channel first
+            if key in self.channels and self.channels[key] is not None:
+                self.channels[key].stop()
+            
+            # Play the sound and track its channel
+            self.channels[key] = self.sounds[key].play()
+            self.last_press_time[key] = current_time
+            logging.info(f"Played: {self.notes.get(key, 'Unknown')}")
 
     def load_sounds(self):
         """Load sound files from the specified folder."""
@@ -30,11 +44,3 @@ class AudioManager:
             except pygame.error:
                 logging.warning(f"Sound file for {note} not found at {sound_path}.")
         logging.info("Sound loading complete.")
-
-    def play_sound(self, key: int):
-        """Play the sound corresponding to the given key if debounced."""
-        current_time = time.time()
-        if key in self.sounds and (current_time - self.last_press_time.get(key, 0)) > self.debounce_interval:
-            self.sounds[key].play()
-            self.last_press_time[key] = current_time
-            logging.info(f"Played: {self.notes.get(key, 'Unknown')}")
