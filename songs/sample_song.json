@@ -1,0 +1,42 @@
+[
+    {"time": 2.75, "note": 0, "duration": 0.5},
+    {"time": 3.5, "note": 0, "duration": 0.5},
+    {"time": 4.25, "note": 4, "duration": 0.5},
+    {"time": 5.0, "note": 4, "duration": 0.5},
+    {"time": 5.75, "note": 5, "duration": 0.5},
+    {"time": 6.5, "note": 5, "duration": 0.5},
+    {"time": 7.25, "note": 4, "duration": 1.0},
+    
+    {"time": 8.25, "note": 3, "duration": 0.5},
+    {"time": 9.0, "note": 3, "duration": 0.5},
+    {"time": 9.75, "note": 2, "duration": 0.5},
+    {"time": 10.5, "note": 2, "duration": 0.5},
+    {"time": 10.25, "note": 1, "duration": 0.5},
+    {"time": 12.0, "note": 1, "duration": 0.5},
+    {"time": 12.75, "note": 0, "duration": 1.0},
+
+    {"time": 14.0, "note": 4, "duration": 0.5},
+    {"time": 14.75, "note": 4, "duration": 0.5},
+    {"time": 15.5, "note": 3, "duration": 0.5},
+    {"time": 16.25, "note": 3, "duration": 0.5},
+    {"time": 17.0, "note": 2, "duration": 0.5},
+    {"time": 17.0, "note": 2, "duration": 0.5},
+    {"time": 17.75, "note": 1, "duration": 1.0},
+    
+    {"time": 18.75, "note": 4, "duration": 0.5},
+    {"time": 19.5, "note": 4, "duration": 0.5},
+    {"time": 20.25, "note": 3, "duration": 0.5},
+    {"time": 21.0, "note": 3, "duration": 0.5},
+    {"time": 21.75, "note": 2, "duration": 0.5},
+    {"time": 22.5, "note": 2, "duration": 0.5},
+    {"time": 23.25, "note": 1, "duration": 1.0},
+
+    {"time": 24.25, "note": 0, "duration": 0.5},
+    {"time": 25.0, "note": 0, "duration": 0.5},
+    {"time": 25.75, "note": 4, "duration": 0.5},
+    {"time": 26.5, "note": 4, "duration": 0.5},
+    {"time": 27.25, "note": 5, "duration": 0.5},
+    {"time": 28.0, "note": 5, "duration": 0.5},
+    {"time": 28.75, "note": 4, "duration": 1.0}
+  ]
+  
